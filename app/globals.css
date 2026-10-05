@@ -1,0 +1,140 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root,
+.dark {
+  --ink: #1b1815;
+  --panel: #24201c;
+  --panel2: #2e2924;
+  --line: #4a4038;
+  --text: #f4f4f2;
+  --dim: #a89f94;
+  color-scheme: dark;
+}
+.light {
+  --ink: #efe3c8;
+  --panel: #fff6e2;
+  --panel2: #f4e4c1;
+  --line: #b89f74;
+  --text: #2a211a;
+  --dim: #6e6050;
+  color-scheme: light;
+}
+
+html,
+body {
+  background: var(--ink);
+  color: var(--text);
+}
+
+body {
+  font-family: var(--font-body), monospace;
+  font-size: 18px;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  font-smooth: never;
+  text-rendering: optimizeSpeed;
+  padding-bottom: env(safe-area-inset-bottom);
+  overflow-x: hidden;
+}
+
+.pixelated,
+img.sprite {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+@layer components {
+  .shadow-px {
+    box-shadow: 4px 4px 0 0 #000;
+  }
+  .panel {
+    @apply border-[3px] border-black bg-panel shadow-px;
+  }
+  .panel-title {
+    @apply flex items-center justify-between border-b-[3px] border-black bg-panel2 px-3 py-2 font-head text-[10px] uppercase tracking-wider text-amber;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 border-[3px] border-black bg-amber px-4 py-2 font-head text-[10px] uppercase text-ink shadow-px transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 border-[3px] border-black bg-panel2 px-3 py-2 font-head text-[10px] uppercase text-text shadow-px active:translate-x-[2px] active:translate-y-[2px] active:shadow-none;
+  }
+  .tab {
+    @apply border-[3px] border-black px-3 py-2 font-head text-[9px] uppercase;
+  }
+  .tab-on {
+    @apply bg-amber text-ink;
+  }
+  .tab-off {
+    @apply bg-panel2 text-dim hover:text-text;
+  }
+  .input {
+    @apply w-full border-[3px] border-black bg-ink px-3 py-2 font-body text-lg text-text outline-none focus:border-amber;
+  }
+  .num-link {
+    @apply underline decoration-dotted decoration-2 underline-offset-4 hover:text-amber;
+  }
+}
+
+/* ticker */
+.ticker-mask {
+  mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent);
+}
+
+/* odometer */
+.odo-col {
+  transition: transform 600ms steps(10, end);
+}
+
+/* market report drop */
+@keyframes drop {
+  0% { transform: translateY(-120%) rotate(-4deg); }
+  70% { transform: translateY(6%) rotate(1deg); }
+  85% { transform: translateY(-2%) rotate(0deg); }
+  100% { transform: translateY(0); }
+}
+.drop-in { animation: drop 700ms steps(8, end) both; }
+
+@keyframes ring {
+  0%, 100% { transform: rotate(0); }
+  20% { transform: rotate(-18deg); }
+  40% { transform: rotate(14deg); }
+  60% { transform: rotate(-10deg); }
+  80% { transform: rotate(6deg); }
+}
+.ring { animation: ring 700ms steps(6, end) 3; transform-origin: 50% 0; }
+
+@keyframes blink { 50% { opacity: 0; } }
+.blink { animation: blink 1s steps(1, end) infinite; }
+
+@keyframes flash { 0% { background: rgba(245,166,35,.35); } 100% { background: transparent; } }
+.flash { animation: flash 900ms steps(6, end); }
+
+/* wallet adapter, pixelised */
+.wallet-adapter-button {
+  font-family: var(--font-head), monospace !important;
+  font-size: 9px !important;
+  height: auto !important;
+  padding: 8px 10px !important;
+  line-height: 1.2 !important;
+  border: 3px solid #000 !important;
+  border-radius: 0 !important;
+  background: #f5a623 !important;
+  color: #1b1815 !important;
+  box-shadow: 4px 4px 0 0 #000;
+}
+.wallet-adapter-button:not([disabled]):hover { background: #ff6b35 !important; }
+.wallet-adapter-button-start-icon { width: 14px !important; height: 14px !important; margin-right: 6px !important; }
+.wallet-adapter-modal-wrapper {
+  border-radius: 0 !important;
+  border: 3px solid #000 !important;
+  background: #24201c !important;
+  box-shadow: 6px 6px 0 0 #000 !important;
+  font-family: var(--font-body), monospace !important;
+}
+.wallet-adapter-modal-title { font-family: var(--font-head), monospace !important; font-size: 14px !important; line-height: 1.6 !important; }
+.wallet-adapter-modal-list .wallet-adapter-button { background: #2e2924 !important; color: #f4f4f2 !important; font-size: 10px !important; box-shadow: none; }
+.wallet-adapter-dropdown-list { border-radius: 0 !important; border: 3px solid #000; background: #24201c !important; }
+.wallet-adapter-dropdown-list-item { border-radius: 0 !important; font-family: var(--font-head), monospace !important; font-size: 9px !important; }

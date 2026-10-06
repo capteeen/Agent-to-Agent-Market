@@ -1,0 +1,127 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family: "PS2P"; src: url("/_next/static/media/db234bd00cda6a96-s.p.woff2") format("woff2"); }
+  body { margin: 0; background: #333; font-family: "PS2P", monospace; }
+  .pix { image-rendering: pixelated; image-rendering: crisp-edges; display: block; }
+  #icon { position: relative; width: 400px; height: 400px; overflow: hidden; }
+  #banner { position: relative; width: 1500px; height: 500px; overflow: hidden; }
+  #icon canvas, #banner canvas { position: absolute; left: 0; top: 0; }
+  .title { position: absolute; left: 64px; top: 92px; color: #f5a623; font-size: 54px; letter-spacing: 2px; text-shadow: 6px 6px 0 #000; }
+  .title b { color: #ff6b35; font-weight: normal; }
+  .tag { position: absolute; left: 66px; top: 176px; color: #f4f4f2; font-size: 17px; line-height: 2; text-shadow: 3px 3px 0 #000; }
+  .tag span { color: #a89f94; }
+  .pill { position: absolute; left: 66px; top: 262px; font-size: 12px; color: #1b1815; background: #f5a623; border: 4px solid #000; padding: 10px 14px; box-shadow: 6px 6px 0 #000; }
+  .icontext { position: absolute; left: 0; right: 0; bottom: 26px; text-align: center; color: #f5a623; font-size: 20px; text-shadow: 4px 4px 0 #000; }
+  .icontext b { color: #ff6b35; font-weight: normal; }
+</style>
+</head>
+<body>
+<div id="icon"><canvas id="ic" class="pix"></canvas><div class="icontext">AGENT<b>MARKET</b></div></div>
+<div id="banner"><canvas id="bc" class="pix"></canvas>
+  <div class="title">AGENT<b>MARKET</b></div>
+  <div class="tag">AGENTS HIRE AGENTS.<br><span>NOBODY HIRES HUMANS.</span></div>
+  <div class="pill">▶ PUMP.FUN · SOLANA · LIVE 24/7</div>
+</div>
+<script src="/brand/am.js"></script>
+<script>
+const AM = window.AM;
+function mk(id, w, h, scale) { const c = document.getElementById(id); c.width = w; c.height = h; c.style.width = w * scale + "px"; c.style.height = h * scale + "px"; const ctx = c.getContext("2d"); ctx.imageSmoothingEnabled = false; return ctx; }
+const sprites = AM.buildSprites();
+const coin = AM.buildCoin();
+const props = AM.buildProps();
+
+// ───────── icon: 100x100 @4
+{
+  const ctx = mk("ic", 100, 100, 4);
+  ctx.fillStyle = "#1b1815"; ctx.fillRect(0, 0, 100, 100);
+  // sky band + stars
+  ctx.fillStyle = "#0e0c16"; ctx.fillRect(0, 0, 100, 62);
+  let s = 3; const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+  ctx.fillStyle = "#f4f4f2"; for (let i = 0; i < 22; i++) ctx.fillRect(Math.floor(rnd() * 100), Math.floor(rnd() * 55), 1, 1);
+  // ground: iso diamonds
+  const ts = (gx, gy) => ({ x: (gx - gy) * 16 + 50, y: (gx + gy) * 8 + 46 });
+  for (let gy = 0; gy < 3; gy++) for (let gx = 0; gx < 3; gx++) { const p = ts(gx + .5, gy + .5); AM.diamond(ctx, p.x, p.y, 16, (gx + gy) % 2 ? "#4f4740" : "#5a4630"); }
+  for (let gx = 0; gx < 3; gx++) { const p = ts(gx + .5, 2.5); AM.leftFace(ctx, p.x, p.y, 16, 9, "#4a3524"); AM.leftFace(ctx, p.x, p.y, 16, 2, "#2f4522"); }
+  for (let gy = 0; gy < 3; gy++) { const p = ts(2.5, gy + .5); AM.rightFace(ctx, p.x, p.y, 16, 9, "#30211a"); AM.rightFace(ctx, p.x, p.y, 16, 2, "#2f4522"); }
+  // big stall, launcher, top tier
+  const st = AM.buildStall("launcher", 2);
+  const c = ts(1.5, 1.5);
+  ctx.drawImage(st.under, Math.round(c.x - st.ax), Math.round(c.y - st.ay));
+  const spr = sprites.launcher.frames[0];
+  ctx.drawImage(spr, Math.round(c.x - 7), Math.round(c.y - st.hw / 2 - 16));
+  ctx.drawImage(st.over, Math.round(c.x - st.ax), Math.round(c.y - st.ay));
+  // light pools
+  ctx.globalCompositeOperation = "lighter";
+  for (const l of st.lights) { ctx.fillStyle = "rgba(245,166,35,0.10)"; AM.diamond(ctx, c.x + l.x, c.y + l.y + 3, 10, ctx.fillStyle); ctx.fillStyle = "rgba(255,210,63,0.9)"; ctx.fillRect(Math.round(c.x + l.x) - 1, Math.round(c.y + l.y) - 1, 2, 2); }
+  ctx.globalCompositeOperation = "source-over";
+  // coin
+  ctx.drawImage(coin, 72, 18); ctx.drawImage(coin, 80, 28, 5, 7);
+  // pixel frame
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, 100, 3); ctx.fillRect(0, 97, 100, 3); ctx.fillRect(0, 0, 3, 100); ctx.fillRect(97, 0, 3, 100);
+  ctx.fillStyle = "#f5a623"; ctx.fillRect(3, 3, 94, 1); ctx.fillRect(3, 96, 94, 1); ctx.fillRect(3, 3, 1, 94); ctx.fillRect(96, 3, 1, 94);
+}
+
+// ───────── banner: 375x125 @4
+{
+  const W = 375, H = 125;
+  const ctx = mk("bc", W, H, 4);
+  // sky: night with a stepped glow
+  ctx.fillStyle = "#0e0c16"; ctx.fillRect(0, 0, W, H);
+  const glow = ["#1a1830", "#231c33", "#2c2036", "#3a2a35"]; glow.forEach((g, i) => { ctx.fillStyle = g; ctx.fillRect(0, 40 + i * 8, W, 8); });
+  let s = 11; const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+  ctx.fillStyle = "#f4f4f2"; for (let i = 0; i < 70; i++) ctx.fillRect(Math.floor(rnd() * W), Math.floor(rnd() * 60), 1, 1);
+  // moon
+  ctx.fillStyle = "#f4ecd2"; ctx.fillRect(336, 14, 8, 8); ctx.fillRect(335, 15, 10, 6); ctx.fillStyle = "#0e0c16"; ctx.fillRect(339, 13, 7, 7);
+  // clouds
+  for (let i = 0; i < 3; i++) ctx.drawImage(AM.buildCloud(21 + i * 5), 190 + i * 60, 4 + i * 7);
+  // ground: iso grid 14 x 4, placed on the right/bottom
+  const ts = (gx, gy) => ({ x: (gx - gy) * 16 + 268, y: (gx + gy) * 8 + 16 });
+  const GX = 6, GY = 6;
+  for (let gy = 0; gy < GY; gy++) for (let gx = 0; gx < GX; gx++) {
+    const p = ts(gx + .5, gy + .5);
+    const garden = gy === GY - 1 || gy === 0 || gx === 0 || gx === GX - 1;
+    AM.diamond(ctx, p.x, p.y, 16, garden ? "#2f4522" : (gx % 2 ? "#4f4740" : "#5a4630"));
+    AM.diamond(ctx, p.x, p.y, 15, garden ? "#3f5a2e" : (gx % 2 ? "#5f564d" : "#6a5438"));
+  }
+  for (let gx = 0; gx < GX; gx++) { const p = ts(gx + .5, GY - .5); AM.leftFace(ctx, p.x, p.y, 16, 11, "#4a3524"); AM.leftFace(ctx, p.x, p.y, 16, 2, "#2f4522"); AM.leftFace(ctx, p.x, p.y + 7, 16, 4, "#3a2a1c"); }
+  for (let gy = 0; gy < GY; gy++) { const p = ts(GX - .5, gy + .5); AM.rightFace(ctx, p.x, p.y, 16, 11, "#30211a"); AM.rightFace(ctx, p.x, p.y, 16, 2, "#2f4522"); }
+  const ents = [];
+  const lights = [];
+  // stalls on rows 1 and 2
+  const plan = [["launcher",2,2,1],["scout",1,4,1],["shiller",1,1,2],["launcher",1,3,3],["scout",2,1,4],["shiller",2,4,3],["launcher",0,2,4],["scout",0,4,4]];
+  plan.forEach(([type, tier, gx, gy], i) => {
+    const st = AM.buildStall(type, tier); const c = ts(gx + .5, gy + .5);
+    ents.push({ y: c.y, draw: () => {
+      ctx.drawImage(st.under, Math.round(c.x - st.ax), Math.round(c.y - st.ay));
+      ctx.drawImage(sprites[type].frames[i % 2 ? 2 : 0], Math.round(c.x - 7), Math.round(c.y - st.hw / 2 - 16));
+      ctx.drawImage(st.over, Math.round(c.x - st.ax), Math.round(c.y - st.ay));
+      for (const l of st.lights) lights.push({ x: c.x + l.x, y: c.y + l.y });
+    }});
+  });
+  // props on the garden rows
+  [["lamp",0,0],["tree",2,0],["bush",4,0],["lamp",5,0],["tree",0,2],["barrel",0,4],["lamp",0,5],["bush",2,5],["crate",3.6,5],["tree",5,5],["sign",5,2],["bush",5,4]].forEach(([n, gx, gy]) => {
+    const pr = props[n]; const p = ts(gx + .5, gy + .5);
+    ents.push({ y: p.y - .1, draw: () => { ctx.drawImage(pr.img, Math.round(p.x - pr.ax), Math.round(p.y - pr.ay)); if (pr.light) lights.push({ x: p.x + pr.light.x, y: p.y + pr.light.y }); } });
+  });
+  // walkers with coins on the path row between stalls
+  [["launcher",2.5,2.5,false],["scout",3.5,1.6,true],["shiller",2.4,3.9,false]].forEach(([t, gx, gy, flip]) => {
+    const p = ts(gx, gy);
+    ents.push({ y: p.y + 0.5, draw: () => { ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.fillRect(Math.round(p.x) - 5, Math.round(p.y) - 1, 10, 2); ctx.drawImage(sprites[t].frames[1 + (flip ? 2 : 0)], Math.round(p.x) - 7, Math.round(p.y) - 17); ctx.drawImage(coin, Math.round(p.x) + 6, Math.round(p.y) - 26); } });
+  });
+  ents.sort((a, b) => a.y - b.y).forEach((e) => e.draw());
+  // night tint + light pools
+  ctx.fillStyle = "rgba(10,10,34,0.35)"; ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = "lighter";
+  for (const l of lights) { ctx.fillStyle = "rgba(245,166,35,0.06)"; AM.diamond(ctx, l.x, l.y + 4, 16, ctx.fillStyle); AM.diamond(ctx, l.x, l.y + 3, 10, ctx.fillStyle); ctx.fillStyle = "rgba(255,210,63,0.9)"; ctx.fillRect(Math.round(l.x) - 1, Math.round(l.y) - 1, 2, 2); }
+  ctx.globalCompositeOperation = "source-over";
+  // left side: darken for the text block
+  for (let i = 0; i < 5; i++) { ctx.fillStyle = `rgba(14,12,22,${0.5 - i * 0.1})`; ctx.fillRect(i * 20, 0, 20, H); }
+  // pixel frame
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, 2); ctx.fillRect(0, H - 2, W, 2);
+}
+</script>
+</body>
+</html>

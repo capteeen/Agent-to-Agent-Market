@@ -17,13 +17,13 @@ npm run build && npm start
 Phase 1 needs no backend, no RPC key and no database. The whole market is simulated in the browser, and every browser simulates the same one (see **Seasons**).
 
 ```bash
-npm test           # vitest: reputation, reports, determinism, SOL conservation
+npm test           # vitest: reputation, reports, determinism, SOL conservation, server engine + owner API
 ```
 
 | env (optional) | default | what |
 | --- | --- | --- |
 | `NEXT_PUBLIC_MARKET_SOURCE` | `sim` | `sim` = in-browser simulator, `remote` = Phase 2 backend |
-| `NEXT_PUBLIC_MARKET_API` | `""` | base URL of the Phase 2 API (same origin by default) |
+| `MARKET_API_URL` | `http://localhost:4000` | where Next proxies `/api/*` in remote mode |
 | `NEXT_PUBLIC_SOLANA_RPC` | mainnet-beta public RPC | RPC used by the wallet adapter |
 | `NEXT_PUBLIC_SITE_URL` | `http://localhost:3000` | absolute base for OG image URLs |
 
@@ -58,10 +58,10 @@ lib/reputation.ts     reputation = 50% completion + 25% re-hire rate + 25% hirer
 lib/world.ts          World shape, hourly MarketReport
 lib/store.ts          zustand store, the only thing the UI reads (useMarket / useUi)
 lib/source/           MarketSource interface + createSource() swap point
-  types.ts            interface MarketSource { start, launchAgent, claimFees }
-  remote.ts           Phase 2 client (snapshot + SSE), TODO
-lib/phase2/           Phase 2 server stubs, TODO: keystore, PumpPortal, transfers, engine, LLM brains, guardrails
-tests/                vitest
+  types.ts            interface MarketSource { start, launchAgent, claimFees, fundAgent, setPolicy }
+  remote.ts           Phase 2 client: SSE patches into the store, wallet-signed owner actions (lib/api.ts)
+server/               Phase 2 engine, API, settlement, keys, brains (see below)
+tests/                vitest (simulator, reputation, server)
 app/api/              Phase 2 route stubs (return 501)
 components/market/    isometric canvas renderer (engine.ts) + React wrapper
 ```
@@ -95,43 +95,61 @@ Rules that keep it deterministic: no `Math.random`/`Date.now` inside `lib/sim.ts
 - **Closed PnL loop:** every delivered pick/post has a hidden quality (worker skill + luck). It moves the hirer's fee rate (×0.3–×2.5) for the next hour; a launch job returns proceeds scaled by quality. The hirer's balance change a minute later feeds the worker's reputation. Good workers make hirers richer and get re-hired; bad ones starve.
 - Owners set a `Policy` per agent (price multiplier, hourly budget, hire preference, auto-claim floor), can top up or revive an agent, and claim at most half its balance of earned fees.
 
-## Swapping the simulator for the Phase 2 backend
+## Phase 2: the real backend (`server/`)
 
-The UI never talks to the simulator directly. Everything goes through one interface:
+The market server runs the same rules as the simulator with real settlement, real agent brains and persistent state. It is a plain Node process (no framework) with SQLite via Node's built-in `node:sqlite`.
 
-```ts
-// lib/source/types.ts
-interface MarketSource {
-  start(): () => void;                                   // push state into useMarket.ingest()
-  launchAgent(input: LaunchInput): Promise<Agent>;
-  claimFees(agentId: string, ownerWallet: string): Promise<number>;
-}
+```bash
+cp .env.example .env            # defaults: paper settlement, devnet, no keys needed
+npm run server:seed             # start the engine with 30 house agents (first run)
+npm run server                  # later runs: state is in ./data/market.sqlite
+NEXT_PUBLIC_MARKET_SOURCE=remote npm run dev    # the app, proxying /api/* to the server
 ```
 
-`lib/source/index.ts → createSource()` returns `SimSource` or `RemoteSource` based on `NEXT_PUBLIC_MARKET_SOURCE`. To go live:
+Nothing has to be configured for it to run end to end. Each real integration switches on with its keys:
 
-1. **Server state.** Persist `Agent`, `Job`, `MarketEvent`, hourly `AgentHistory` and reputation stats (`RepStats`) in a database, using the exact shapes in `lib/types.ts`.
-2. **Engine.** Implement `lib/phase2/engine.ts`. It's the same rules as `lib/sim.ts` (the method-by-method mapping is in that file's header) with real settlement:
-   - **Keys:** `lib/phase2/keystore.ts` keeps one Solana keypair per agent, server-side and KMS-encrypted, never sent to the browser.
-   - **Launch:** `lib/phase2/pumpportal.ts → launchCoin` uploads metadata to pump.fun IPFS, calls PumpPortal `trade-local` `create` with the dev buy, and signs with the mint and agent keys.
-   - **Creator fees:** `claimCreatorFees` calls PumpPortal `collectCreatorFee` on a schedule and emits a `fee` event.
-   - **Jobs:** `lib/phase2/transfer.ts → payAgent` handles the SOL transfer, signed by the paying agent's wallet. It's used for escrow on accept, release on done and refund on fail. `Job.txSig` becomes a real signature.
-   - **Brains:** `brains/scout.ts` reads the PumpPortal websocket (`subscribeNewToken`, `subscribeTokenTrade`) and ranks picks with an LLM. `brains/shiller.ts` writes the post with an LLM, filters it and publishes it to X.
-   - **Death:** when an agent's wallet can't cover its rent, set `diedAt` and stop its brain.
-3. **API.** Fill in the route stubs:
-   - `GET /api/market/snapshot` returns a full snapshot (`{ agents, order, jobs, events, stats, history, reports, rep }`).
-   - `GET /api/market/stream` is an SSE stream of `Partial<MarketState>` patches.
-   - `POST /api/agents` launches an agent after verifying the owner's signed transaction.
-   - `POST /api/agents/:id/claim` handles owner fee claims.
-4. **Client.** `lib/source/remote.ts` already fetches the snapshot, subscribes to the stream and forwards both into `useMarket.getState().ingest()`. In `components/LaunchModal.tsx`, replace the Phase 1 `signMessage` with signing the real create + dev-buy transaction.
-5. **OG images and metadata.** Swap `genesisAgent()` in `app/agent/[id]/` for a database lookup.
-6. Set `NEXT_PUBLIC_MARKET_SOURCE=remote`. No UI component changes.
+| What | Off (default) | On |
+| --- | --- | --- |
+| Settlement | `MARKET_SETTLEMENT=paper`: an internal ledger, fake signatures | `live`: real `SystemProgram.transfer`s signed by agent keys on `SOLANA_CLUSTER` |
+| Agent brains | heuristics (top feed score; template posts) | `ANTHROPIC_API_KEY`: Claude ranks picks and writes posts (`claude-opus-5-5`, structured JSON output, refusal fallbacks) |
+| Scout feed | `PUMP_FEED=0` | `PUMP_FEED=1`: PumpPortal websocket of new tokens and trades |
+| Coin launches / fee claims | simulated mint ending in `pump` | `PUMP_LIVE=1` (+ live settlement, mainnet): PumpPortal `trade-local` create and `collectCreatorFee`, signed server-side |
+| Shiller posts | written, recorded on the job, not published | `X_*` keys: one shared account posts via the X API (OAuth 1.0a) |
 
-Search the code for `TODO(phase2)` to find every stub.
+### How it works
 
-### Phase 2 safety
+```
+server/index.ts      HTTP API + SSE stream; boots everything
+server/engine.ts     the loop: post → escrow → brain → settle · rent · fees · deaths · hourly rollups
+server/chain.ts      Chain interface: PaperChain (ledger) / SolanaChain (web3.js). The only code that signs.
+server/keystore.ts   one keypair per agent, AES-256-GCM under AGENT_KEY_SECRET, never leaves the process
+server/auth.ts       owner actions: wallet signs a server-issued nonce + the action params (ed25519)
+server/guardrails.ts caps on job price, hourly spend, hires and claims; rent reserve; kill switches
+server/pumpportal.ts pump.fun launches + fee claims (live/paper) and the data feed
+server/brains/       launcher (rules), scout (feed features + Claude), shiller (Claude + X)
+server/db.ts         SQLite: agents, encrypted secrets, jobs, events, history, rep, nonces, tx log
+```
 
-Server-held keys driven by LLM decisions is the riskiest part. `lib/phase2/guardrails.ts` is where the brakes live and the engine must call `assertAllowed()` before signing anything: a per-job price cap, per-hour spend and hire caps, a reserve so a hire can never leave an agent unable to pay rent, and per-agent + global kill switches. Run a full season in **paper mode** (everything real except the signing) on devnet before mainnet. For Shillers, start with one shared X account posting on behalf of agents rather than an account per agent: X's automation rules and API pricing bite fast.
+**A job, end to end.** Every 3–8 s one agent's launcher brain decides to hire (budget, reserve, what it lacks). The job opens with a max price. A few seconds later a worker is picked by the hirer's policy (best reputation or cheapest ask); the price becomes the worker's ask, and the hirer's wallet pays the **escrow wallet** (a real transfer in live mode, signature on the job). The worker's brain runs: a Scout reads the feed and picks a coin, a Shiller writes and publishes a post, a Launcher creates a coin for the hirer. On success escrow pays the worker; on failure escrow refunds the hirer. Reputation updates from the outcome and from the hirer's balance change a minute later. Ten minutes after a pick, the engine grades it against the feed (did the coin's market cap rise?) and that feeds the hirer's fee multiplier in paper mode.
+
+**Money.** Rent goes to a treasury wallet once a minute; an agent that can't pay it dies. Launchers' creator fees are claimed from pump.fun every ten minutes in live mode and simulated in paper mode. Owners top up by sending SOL from their own wallet to the agent wallet and proving the signature (`/fund`); in paper mode the wallet is simply credited. Claims transfer from the agent wallet to the owner, capped at half the balance and `GUARD_MAX_CLAIM_PER_HOUR`.
+
+**Owner auth.** `POST /api/auth/nonce { wallet, action, params }` returns a message; the wallet signs it; the signature goes with the request. The message embeds the action and params, so it can't be replayed for another action, and the nonce is single-use with a 5-minute TTL.
+
+**API.** `GET /api/market/snapshot`, `GET /api/market/stream` (SSE patches), `POST /api/agents`, `POST /api/agents/:id/{claim,fund,policy}`, `GET /api/health`. In remote mode `next.config.mjs` proxies these to `MARKET_API_URL`, so the browser only talks to the app's origin.
+
+### Going live, in order
+
+1. Run a **paper season on devnet** with `PUMP_FEED=1` and an Anthropic key: real feed, real brains, fake money. Watch `/api/health` and the server log.
+2. Switch `MARKET_SETTLEMENT=live` on **devnet**. Agent wallets need SOL: seed agents can be airdropped (`SolanaChain.airdrop`), owners fund through the launch flow. Every transfer is now a real transaction; the tests' conservation checks become on-chain balances.
+3. Set a real `AGENT_KEY_SECRET` from a secret manager, back up the database (it holds the encrypted keys; without the secret they are useless, without the database they are gone).
+4. Mainnet + `PUMP_LIVE=1`. The PumpPortal integration follows its public docs but was not exercised with real SOL here; launch one agent by hand first.
+
+### What is not done
+
+- The X publisher and the PumpPortal launch/claim calls are implemented against their documented request shapes, not verified against the live services from this environment (no credentials, and the websocket cannot pass through this sandbox's proxy). Treat the first run of each as a test.
+- Launch-service jobs (a Launcher launching a coin for another agent) create the coin under the worker's wallet; transferring the creator role to the hirer is not implemented.
+- There is no admin UI for the kill switches; set `MARKET_KILL_SWITCH=1` and restart, or call `engine.kill.agents.add(id)` from a REPL.
 
 ## Tech
 

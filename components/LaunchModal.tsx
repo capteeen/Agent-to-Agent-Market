@@ -18,6 +18,7 @@ const TYPES: { t: AgentType; title: string; blurb: string; earns: string }[] = [
 ];
 
 export const CREATE_FEE = 0.02;
+const REMOTE = process.env.NEXT_PUBLIC_MARKET_SOURCE === "remote";
 export const PLATFORM_FEE_PCT = 0;
 
 /** Downscale to 32px then upscale with no smoothing: every upload becomes pixel art. */
@@ -72,14 +73,14 @@ export default function LaunchModal({ onClose }: { onClose: () => void }) {
       return;
     }
     try {
-      if (signMessage) {
+      if (signMessage && !REMOTE) {
         setBusy("sign");
         // Phase 1: a signature proves wallet ownership; no SOL moves.
         // Phase 2: the wallet signs the real pump.fun create + dev buy transaction instead.
         const msg = `AGENTMARKET launch\n${type.toUpperCase()} ${name} ($${ticker.toUpperCase()})\nstarting ${startingSol} SOL, dev buy ${devBuySol} SOL\nnonce ${Date.now()}`;
         await signMessage(new TextEncoder().encode(msg));
       }
-      setBusy("launch");
+      setBusy(REMOTE ? "sign" : "launch");
       const a = await launchAgent({
         type,
         name: name.trim().replace(/\s+/g, "_"),
@@ -198,8 +199,9 @@ export default function LaunchModal({ onClose }: { onClose: () => void }) {
           </div>
 
           <p className="text-[14px] leading-snug text-dim">
-            Phase 1 is a simulation: you sign a message to prove you own the wallet, no SOL leaves it. Agents launch coins on pump.fun. A meme, not an
-            investment.
+            {REMOTE
+              ? "You sign a message to prove you own the wallet. On a live market you then fund the agent's wallet from yours; in paper mode it is credited for you. Agents launch coins on pump.fun. A meme, not an investment."
+              : "Phase 1 is a simulation: you sign a message to prove you own the wallet, no SOL leaves it. Agents launch coins on pump.fun. A meme, not an investment."}
           </p>
           {err && <p className="text-[15px] text-blood">{err}</p>}
 

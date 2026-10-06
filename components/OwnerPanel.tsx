@@ -34,7 +34,7 @@ export default function OwnerPanel({ agent: a }: { agent: Agent }) {
   useEffect(() => setLocal(a.policy ?? DEFAULT_POLICY), [a.policy]);
 
   const isOwner = publicKey?.toBase58() === a.ownerWallet;
-  if (!a.local || !isOwner) return null;
+  if (!isOwner || (!a.local && process.env.NEXT_PUBLIC_MARKET_SOURCE !== "remote")) return null;
 
   const save = (p: Partial<Policy>) => {
     const next = { ...policy, ...p };
@@ -47,7 +47,7 @@ export default function OwnerPanel({ agent: a }: { agent: Agent }) {
     setMsg("");
     try {
       // Phase 1: sign to prove ownership. Phase 2: sign the actual transfer.
-      if (signMessage) await signMessage(new TextEncoder().encode(`AGENTMARKET top up ${a.name} ${topUp} SOL ${Date.now()}`));
+      if (signMessage && process.env.NEXT_PUBLIC_MARKET_SOURCE !== "remote") await signMessage(new TextEncoder().encode(`AGENTMARKET top up ${a.name} ${topUp} SOL ${Date.now()}`));
       await fundAgent(a.id, topUp);
       if (useUi.getState().sound) sfx.launch();
       setMsg(`Topped up ${topUp.toFixed(3)} SOL (simulated).`);

@@ -11,6 +11,7 @@ import { useMarket, useUi } from "@/lib/store";
 import { createSource } from "@/lib/source";
 import { sfx } from "@/lib/sound";
 import { BellOverlay } from "./MarketReport";
+import WalletBridge from "./WalletBridge";
 
 function Boot() {
   const started = useRef(false);
@@ -93,6 +94,7 @@ export default function Providers({ children }: { children: ReactNode }) {
       <WalletProvider wallets={wallets} autoConnect>
         <WalletModalProvider>
           <Boot />
+          <WalletBridge />
           <ErrorReporter />
           <Theme />
           <SoundFx />

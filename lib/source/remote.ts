@@ -1,73 +1,120 @@
-// ─────────────────────────────────────────────────────────────────────────
-// PHASE 2 — TODO. Not wired up yet; select it with NEXT_PUBLIC_MARKET_SOURCE=remote
-//
-// The server (see lib/phase2/*) runs the real agents and exposes:
-//   GET  /api/market/snapshot   → { agents, order, jobs, events, stats, history, reports, rep }
-//   GET  /api/market/stream     → SSE of the same shapes, as partial patches
-//   POST /api/agents            → LaunchInput (+ a signed tx from the owner) → Agent
-//   POST /api/agents/:id/claim  → { ownerWallet, signature } → { amount, txSig }
-// Every patch is passed straight to useMarket.getState().ingest(), so no UI
-// component needs to change when switching from the simulator.
-// ─────────────────────────────────────────────────────────────────────────
+// Phase 2 client: the server runs the market; this feeds its snapshot and
+// SSE patches into the same store the simulator writes to. Owner actions are
+// signed by the connected wallet (lib/api.ts) — the wallet is handed in by
+// the UI at call time, so this source stays free of React.
 
-import { useMarket } from "../store";
-import type { Agent, LaunchInput, Policy } from "../types";
+import { useMarket, type MarketState } from "../store";
+import type { Agent, Job, LaunchInput, MarketEvent, Policy } from "../types";
+import { api, API_BASE } from "../api";
 import type { MarketSource } from "./types";
 
+interface Patch extends Partial<Pick<MarketState, "agents" | "order" | "jobs" | "events" | "stats" | "history" | "reports" | "rep" | "simTime">> {
+  removed?: string[];
+  ready?: boolean;
+}
+
+/** Merge a partial patch into the store; snapshots carry `order` and replace. */
+export function applyPatch(p: Patch) {
+  const s = useMarket.getState();
+  const full = !!p.order;
+  const agents = full ? (p.agents ?? {}) : { ...s.agents, ...(p.agents ?? {}) };
+  for (const id of p.removed ?? []) delete agents[id];
+  let order = p.order ?? s.order;
+  if (!full) {
+    for (const id of Object.keys(p.agents ?? {})) if (!order.includes(id)) order = [...order, id];
+    if (p.removed?.length) order = order.filter((id) => !p.removed!.includes(id));
+  }
+  let jobs: Job[] = s.jobs;
+  if (full) jobs = p.jobs ?? [];
+  else if (p.jobs?.length) {
+    const byId = new Map(s.jobs.map((j) => [j.id, j]));
+    for (const j of p.jobs) byId.set(j.id, j);
+    jobs = [...byId.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, 400);
+  }
+  let events: MarketEvent[] = s.events;
+  if (full) events = p.events ?? [];
+  else if (p.events?.length) events = [...p.events, ...s.events].slice(0, 400);
+  useMarket.getState().ingest({
+    ready: true,
+    agents,
+    order,
+    jobs,
+    events,
+    stats: p.stats ?? s.stats,
+    history: full ? (p.history ?? {}) : { ...s.history, ...(p.history ?? {}) },
+    reports: p.reports ?? s.reports,
+    rep: full ? (p.rep ?? {}) : { ...s.rep, ...(p.rep ?? {}) },
+    simTime: p.simTime ?? Date.now(),
+  });
+}
+
 export class RemoteSource implements MarketSource {
-  constructor(private base = process.env.NEXT_PUBLIC_MARKET_API ?? "") {}
+  private es?: EventSource;
+  private stopped = false;
 
   start() {
-    let es: EventSource | undefined;
-    let stopped = false;
+    this.stopped = false;
     useMarket.setState({
       launchAgent: (input) => this.launchAgent(input),
-      claimFees: (id) => this.claimFees(id, ""),
+      claimFees: (id) => this.claimFees(id),
       fundAgent: (id, sol) => this.fundAgent(id, sol),
       setPolicy: (id, p) => this.setPolicy(id, p),
     });
-    (async () => {
-      // TODO(phase2): implement the snapshot endpoint
-      const res = await fetch(`${this.base}/api/market/snapshot`);
-      if (!res.ok || stopped) return;
-      useMarket.getState().ingest({ ...(await res.json()), ready: true });
-      // TODO(phase2): implement the SSE stream; send patches, not full snapshots
-      es = new EventSource(`${this.base}/api/market/stream`);
-      es.onmessage = (m) => useMarket.getState().ingest(JSON.parse(m.data));
-    })().catch((e) => console.error("[remote source]", e));
+    const connect = () => {
+      if (this.stopped) return;
+      const es = new EventSource(`${API_BASE}/api/market/stream`);
+      this.es = es;
+      es.onmessage = (m) => applyPatch(JSON.parse(m.data));
+      es.onerror = () => {
+        es.close();
+        if (!this.stopped) setTimeout(connect, 3000);
+      };
+    };
+    connect();
     return () => {
-      stopped = true;
-      es?.close();
+      this.stopped = true;
+      this.es?.close();
     };
   }
 
-  async launchAgent(input: LaunchInput): Promise<Agent> {
-    // TODO(phase2): build the pump.fun create tx server-side, have the owner sign
-    // the dev buy with their wallet adapter, then POST the signature here.
-    const res = await fetch(`${this.base}/api/agents`, { method: "POST", body: JSON.stringify(input) });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+  // The wallet is attached by the UI (components/WalletBridge.tsx) before any
+  // owner action; without it these throw a clear error.
+  private wallet() {
+    const w = (globalThis as unknown as { __amWallet?: Parameters<typeof api.launch>[0] }).__amWallet;
+    if (!w?.publicKey) throw new Error("connect a wallet first");
+    return w;
   }
 
-  async claimFees(agentId: string, ownerWallet: string): Promise<number> {
-    // TODO(phase2): owner signs a message proving ownership; server claims creator fees.
-    const res = await fetch(`${this.base}/api/agents/${agentId}/claim`, {
-      method: "POST",
-      body: JSON.stringify({ ownerWallet }),
-    });
-    if (!res.ok) throw new Error(await res.text());
-    return (await res.json()).amount;
+  async launchAgent(input: LaunchInput): Promise<Agent> {
+    const r = await api.launch(this.wallet(), input);
+    return { ...(r as unknown as Agent) };
+  }
+
+  async claimFees(agentId: string): Promise<number> {
+    return (await api.claim(this.wallet(), agentId)).amount;
   }
 
   async fundAgent(agentId: string, sol: number): Promise<void> {
-    // TODO(phase2): owner signs a SystemProgram.transfer to the agent's wallet; server confirms it.
-    const res = await fetch(`${this.base}/api/agents/${agentId}/fund`, { method: "POST", body: JSON.stringify({ sol }) });
-    if (!res.ok) throw new Error(await res.text());
+    const w = this.wallet();
+    const health = await api.health();
+    let txSig: string | undefined;
+    if (health.settlement === "live") {
+      // real top-up: the owner's wallet sends SOL to the agent wallet, then we prove it
+      const agent = useMarket.getState().agents[agentId];
+      if (!agent) throw new Error("unknown agent");
+      const { Connection, PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL, clusterApiUrl } = await import("@solana/web3.js");
+      const conn = new Connection(process.env.NEXT_PUBLIC_SOLANA_RPC ?? clusterApiUrl(health.cluster as "devnet"), "confirmed");
+      const wallet = w as unknown as { sendTransaction: (tx: InstanceType<typeof Transaction>, c: InstanceType<typeof Connection>) => Promise<string> };
+      const tx = new Transaction().add(
+        SystemProgram.transfer({ fromPubkey: w.publicKey!, toPubkey: new PublicKey(agent.wallet), lamports: Math.round(sol * LAMPORTS_PER_SOL) }),
+      );
+      txSig = await wallet.sendTransaction(tx, conn);
+      await conn.confirmTransaction(txSig, "confirmed");
+    }
+    await api.fund(w, agentId, sol, txSig);
   }
 
   async setPolicy(agentId: string, policy: Policy): Promise<void> {
-    // TODO(phase2): owner-signed policy update; the engine reads it on the next decision.
-    const res = await fetch(`${this.base}/api/agents/${agentId}/policy`, { method: "POST", body: JSON.stringify(policy) });
-    if (!res.ok) throw new Error(await res.text());
+    await api.policy(this.wallet(), agentId, policy);
   }
 }

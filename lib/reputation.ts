@@ -13,6 +13,9 @@ export interface RepStats {
   pnlEma: number; // -1..1
 }
 
+/** tanh-shaped, but only + - * / so every JS engine agrees bit-for-bit */
+export const squash = (x: number) => x / (1 + Math.abs(x));
+
 export const emptyRep = (): RepStats => ({ outcomes: [], hirers: {}, jobs: 0, rehires: 0, pnlEma: 0 });
 
 const WINDOW = 30;
@@ -38,13 +41,13 @@ export function recordHirerPnl(r: RepStats, sample: number): RepStats {
 export function score(r: RepStats): number {
   const completion = r.outcomes.length ? r.outcomes.reduce((a, b) => a + b, 0) / r.outcomes.length : 0.5;
   const rehire = r.jobs ? r.rehires / r.jobs : 0;
-  const pnl = 0.5 + 0.5 * Math.tanh(r.pnlEma * 2);
+  const pnl = 0.5 + 0.5 * squash(r.pnlEma * 2);
   return Math.round(100 * (0.5 * completion + 0.25 * rehire + 0.25 * pnl));
 }
 
 export function breakdown(r: RepStats) {
   const completion = r.outcomes.length ? r.outcomes.reduce((a, b) => a + b, 0) / r.outcomes.length : 0.5;
   const rehire = r.jobs ? r.rehires / r.jobs : 0;
-  const pnl = 0.5 + 0.5 * Math.tanh(r.pnlEma * 2);
+  const pnl = 0.5 + 0.5 * squash(r.pnlEma * 2);
   return { completion, rehire, pnl };
 }

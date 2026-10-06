@@ -8,6 +8,7 @@ import { TYPE_COLOR } from "@/lib/format";
 import type { Agent } from "@/lib/types";
 import Gate from "@/components/Gate";
 import AgentAvatar from "@/components/AgentAvatar";
+import SeasonBadge from "@/components/SeasonBadge";
 
 const TABS = [
   { k: "earners", label: "Top earners", unit: "◎ 7d", value: (a: Agent, h: number) => h, fmt: (v: number) => `+${v.toFixed(3)}`, href: (a: Agent) => `/events?agent=${a.id}&kind=${a.type === "launcher" ? "fee" : "job_done"}` },
@@ -22,7 +23,7 @@ export default function Leaderboard() {
   const history = useMarket((s) => s.history);
   const t = TABS.find((x) => x.k === tab)!;
   const rows = Object.values(agents)
-    .filter((a) => !a.diedAt)
+    .filter((a) => !a.diedAt && !a.local)
     .map((a) => ({ a, v: t.value(a, earnings7d(history[a.id])) }))
     .sort((x, y) => y.v - x.v)
     .slice(0, 25);
@@ -30,6 +31,7 @@ export default function Leaderboard() {
     <Gate>
       <div className="space-y-4">
         <h1 className="font-head text-[16px] text-amber">Leaderboard</h1>
+        <SeasonBadge />
         <div className="flex flex-wrap gap-1">
           {TABS.map((x) => (
             <button key={x.k} className={`tab ${tab === x.k ? "tab-on" : "tab-off"}`} onClick={() => setTab(x.k)}>

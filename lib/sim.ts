@@ -1,113 +1,215 @@
-// Phase 1 mock simulator. Runs entirely in the browser:
-//  - boots the deterministic genesis market (30 agents, 7d history)
-//  - posts a job every 3-8s, agents accept, deliver or fail
-//  - moves SOL between agent balances, pays creator fees, charges rent
-//  - kills agents that hit 0, spawns new ones, rings the hourly bell
+// Phase 1 mock simulator. Runs entirely in the browser, and every browser
+// runs the *same* one:
+//  - the world is seeded by the season number and stepped on a fixed tick
+//    from the season start, so two visitors at the same moment see the same
+//    agents, jobs, balances and deaths (no server needed)
+//  - a job is posted every 3-8s; workers accept, deliver or fail; SOL moves
+//    between agent balances; launchers earn creator fees; everyone pays rent
+//  - pick/attention quality feeds back into the hirer's fee rate, so good
+//    workers make their hirers richer (and get re-hired)
+//  - agents that hit 0 die; new ones spawn; the hourly bell rings
+// Agents launched in this browser are a local overlay with their own RNG.
 // It writes into the same store a Phase 2 backend would (see lib/source).
 
-import { genesis, makeAgent } from "./genesis";
+import { genesis, makeAgent, randomPolicy } from "./genesis";
 import { failReason, jobResult, SERVICE_VERB } from "./flavor";
+import { makePersona } from "./persona";
 import { emptyRep, recordHirerPnl, recordOutcome, score } from "./reputation";
 import { fakeMint, fakeSig, fakeWallet, mulberry32, pick, range, type Rng } from "./rng";
 import { useMarket } from "./store";
 import type { MarketSource } from "./source/types";
 import {
+  DEFAULT_POLICY,
   HISTORY_HOURS,
   RUBBLE_MS,
   SERVICE_OF,
   type Agent,
+  type AgentHistory,
   type AgentType,
   type EventKind,
   type Job,
   type LaunchInput,
+  type Policy,
+  type Service,
 } from "./types";
-import { HOUR, computeReport, hourFloor, type World } from "./world";
+import { HOUR, computeReport, emptyHistory, hourFloor, policyOf, seasonIndex, seasonStart, type World } from "./world";
+import type { RepStats } from "./reputation";
 
+export const TICK = 500;
 const RENT_EVERY_MS = 5000;
 const RENT: Record<AgentType, number> = { launcher: 0.0008, scout: 0.0006, shiller: 0.0006 };
 const DEATH_FLOOR = 0.0005;
 const MIN_ALIVE = 28;
+const MAX_ALIVE = 36;
 const MAX_JOBS = 400;
 const MAX_EVENTS = 400;
-const MINE_KEY = "am.mine.v1";
+const BASE_PRICE: Record<Service, number> = { pick: 0.035, attention: 0.03, launch: 0.09 };
+const LOCAL_KEY = "am.local.v2";
 
-interface StoredLaunch extends LaunchInput {
-  id: string;
-  bornAt: number;
-  coinCA: string;
-  wallet: string;
+interface LocalSave {
+  agents: Agent[];
+  history: Record<string, AgentHistory>;
+  rep: Record<string, RepStats>;
+  skill: Record<string, number>;
+  savedAt: number;
 }
 
 type Timer = { at: number; fn: () => void };
 
 export class SimSource implements MarketSource {
-  private w!: World;
-  private r: Rng = mulberry32((Date.now() ^ 0x5eed) >>> 0);
+  w!: World;
+  /** sim clock (ms). Advances in TICKs from the season start. */
+  t = 0;
+  private r: Rng = mulberry32(1);
+  /** local-agent randomness: not shared, not deterministic */
+  private rl: Rng = mulberry32((Date.now() ^ 0x5eed) >>> 0);
   private timers: Timer[] = [];
+  private live = new Set<string>();
+  private local = new Set<string>();
   private nextPost = 0;
   private nextRent = 0;
   private nextSpawn = 0;
+  private nextLocalHire = 0;
+  private nextSave = 0;
   private dirty = false;
+  private dirtyHist = new Set<string>();
+  private usedNames = new Set<string>();
+  private usedTickers = new Set<string>();
   private iv?: ReturnType<typeof setInterval>;
+  /** when true, publish() is a no-op (fast-forward) */
+  private silent = false;
+  private published: Record<string, AgentHistory> = {};
+
+  /** Prepare the world at the season start. */
+  private prepare(now: number) {
+    this.w = genesis(now);
+    const start = seasonStart(now);
+    this.t = start;
+    this.r = mulberry32((0xa11ce + seasonIndex(now)) >>> 0);
+    for (const a of Object.values(this.w.agents)) {
+      this.usedNames.add(a.name);
+      this.usedTickers.add(a.ticker);
+    }
+    this.nextPost = start + 1500;
+    this.nextRent = start + RENT_EVERY_MS;
+    this.nextSpawn = start + 90_000;
+    this.ffEnd = now;
+    this.silent = true;
+  }
+
+  /** Build the world at `now` by replaying the season. Pure; used by tests and the server. */
+  init(now: number) {
+    this.prepare(now);
+    while (this.t + TICK <= now) this.step();
+    this.silent = false;
+  }
 
   start() {
-    const now = Date.now();
-    this.w = genesis(now);
-    this.restoreMine();
-    this.seedLiveJobs(now);
-    this.nextPost = now + 1500;
-    this.nextRent = now + RENT_EVERY_MS;
-    this.nextSpawn = now + range(this.r, 60_000, 120_000);
+    this.prepare(Date.now());
+    let stopped = false;
+    const begin = this.t;
+    // replay in slices so the page can paint a progress bar instead of freezing
+    const slice = () => {
+      if (stopped) return;
+      const now = Date.now();
+      const deadline = performance.now() + 40;
+      while (this.t + TICK <= now && performance.now() < deadline) this.step();
+      if (this.t + TICK <= now) {
+        useMarket.setState({ progress: (this.t - begin) / Math.max(1, now - begin) });
+        setTimeout(slice, 0);
+        return;
+      }
+      this.silent = false;
+      this.restoreLocal();
+      this.nextLocalHire = this.t + 20_000;
+      this.publish(true);
+      this.iv = setInterval(() => this.sync(), 250);
+    };
     useMarket.setState({
       launchAgent: (input) => this.launchAgent(input),
-      claimFees: (id) => this.claimFees(id, ""),
+      claimFees: (id) => this.claimFees(id),
+      fundAgent: (id, sol) => this.fundAgent(id, sol),
+      setPolicy: (id, p) => this.setPolicy(id, p),
     });
-    this.publish(true);
-    this.iv = setInterval(() => this.tick(), 250);
-    return () => clearInterval(this.iv);
+    slice();
+    return () => {
+      stopped = true;
+      clearInterval(this.iv);
+    };
+  }
+
+  private sync() {
+    const now = Date.now();
+    let n = 0;
+    while (this.t + TICK <= now && n++ < 4000) this.step();
+    this.publish();
   }
 
   // ───────────────────────────── loop ─────────────────────────────
 
-  private tick() {
-    const now = Date.now();
-    const due = this.timers.filter((t) => t.at <= now);
-    if (due.length) {
-      this.timers = this.timers.filter((t) => t.at > now);
-      due.forEach((t) => t.fn());
+  /** Advance the world by one TICK. Deterministic. */
+  step() {
+    this.t += TICK;
+    const t = this.t;
+    if (this.timers.length && this.timers[0].at <= t) {
+      const due: Timer[] = [];
+      const keep: Timer[] = [];
+      for (const x of this.timers) (x.at <= t ? due : keep).push(x);
+      this.timers = keep;
+      for (const x of due) x.fn();
     }
-    if (now >= this.nextPost) {
-      this.postJob(now);
-      this.nextPost = now + range(this.r, 3000, 8000);
+    if (t >= this.nextPost) {
+      this.postJob();
+      this.nextPost = t + range(this.r, 3000, 8000);
     }
-    if (now >= this.nextRent) {
-      this.rentAndFees(now);
-      this.nextRent = now + RENT_EVERY_MS;
+    if (t >= this.nextRent) {
+      this.rentAndFees();
+      this.nextRent = t + RENT_EVERY_MS;
     }
-    if (now >= this.nextSpawn) {
+    if (t >= this.nextSpawn) {
       // humans keep launching: always when the market thins out, sometimes anyway
-      if (this.alive().length < MIN_ALIVE || this.r() < 0.25) this.spawnRandom(now);
-      this.nextSpawn = now + range(this.r, 45_000, 120_000);
+      const n = this.alive().length;
+      if (n < MIN_ALIVE || (n < MAX_ALIVE && this.r() < 0.25)) this.spawnRandom();
+      this.nextSpawn = t + range(this.r, 45_000, 120_000);
     }
-    this.expireOpen(now);
-    this.rollHour(now);
-    this.publish();
+    if (this.local.size && t >= this.nextLocalHire) {
+      this.localHires();
+      this.nextLocalHire = t + range(this.rl, 25_000, 70_000);
+    }
+    this.expireOpen();
+    this.rollHour();
   }
 
   private after(ms: number, fn: () => void) {
-    this.timers.push({ at: Date.now() + ms, fn });
+    const at = this.t + ms;
+    // keep sorted by time so step() can short-circuit
+    let i = this.timers.length;
+    while (i > 0 && this.timers[i - 1].at > at) i--;
+    this.timers.splice(i, 0, { at, fn });
   }
 
   // ─────────────────────────── helpers ────────────────────────────
 
-  private alive(type?: AgentType) {
-    return Object.values(this.w.agents).filter((a) => !a.diedAt && (!type || a.type === type));
+  private alive(type?: AgentType, includeLocal = false) {
+    const out: Agent[] = [];
+    for (const id of this.w.order) {
+      const a = this.w.agents[id];
+      if (!a || a.diedAt || (type && a.type !== type) || (!includeLocal && a.local)) continue;
+      out.push(a);
+    }
+    return out;
+  }
+
+  private rng(a: Agent | undefined) {
+    return a?.local ? this.rl : this.r;
   }
 
   private patch(id: string, p: Partial<Agent>) {
     const a = this.w.agents[id];
     if (!a) return;
-    this.w.agents[id] = { ...a, ...p };
+    // while fast-forwarding nobody is watching, so mutate in place (much cheaper)
+    if (this.silent) Object.assign(a, p);
+    else this.w.agents[id] = { ...a, ...p };
     this.dirty = true;
   }
 
@@ -115,7 +217,7 @@ export class SimSource implements MarketSource {
   private move(id: string, delta: number, kind: "income" | "spend" | "other" = "other") {
     const a = this.w.agents[id];
     if (!a || a.diedAt) return;
-    const balance = Math.max(0, +(a.balance + delta).toFixed(6));
+    const balance = Math.max(0, Math.round((a.balance + delta) * 1e6) / 1e6);
     this.patch(id, {
       balance,
       feesEarned: kind === "income" ? a.feesEarned + delta : a.feesEarned,
@@ -123,51 +225,92 @@ export class SimSource implements MarketSource {
     });
     const h = this.w.history[id];
     if (h) {
-      const bal = [...h.balance];
-      const inc = [...h.income];
-      bal[bal.length - 1] = balance;
-      if (kind === "income") inc[inc.length - 1] += delta;
-      this.w.history[id] = { balance: bal, income: inc };
+      const i = h.balance.length - 1;
+      h.balance[i] = balance;
+      if (kind === "income") h.income[i] += delta;
+      if (kind === "spend") h.spend[i] -= delta;
+      this.dirtyHist.add(id);
     }
     if (balance <= DEATH_FLOOR) this.kill(id);
   }
 
+  private lseq = 1;
+
+  /** during fast-forward, events older than the window we keep are never materialised */
+  private ffEnd = 0;
+
   private emit(kind: EventKind, agentIds: string[], amount: number, text: string, jobId?: string) {
-    this.w.events = [
-      { id: `ev_${this.w.seq++}`, kind, agentIds, amount, text, at: Date.now(), jobId },
-      ...this.w.events,
-    ].slice(0, MAX_EVENTS);
+    const isLocal = agentIds.some((id) => this.local.has(id));
+    // ids are consumed even when the event is skipped, so job ids match across browsers
+    const id = isLocal ? `lev_${this.lseq++}` : `ev_${this.w.seq++}`;
+    if (this.silent && this.t < this.ffEnd - 3 * HOUR) return;
+    this.w.events.push({ id, kind, agentIds, amount, text, at: this.t, jobId });
+    if (this.w.events.length > MAX_EVENTS + 200) this.w.events.splice(0, this.w.events.length - MAX_EVENTS);
     this.dirty = true;
   }
 
   private setJob(id: string, p: Partial<Job>) {
-    this.w.jobs = this.w.jobs.map((j) => (j.id === id ? { ...j, ...p } : j));
+    const j = this.w.jobs.get(id);
+    if (!j) return;
+    const next = this.silent ? Object.assign(j, p) : { ...j, ...p };
+    this.w.jobs.set(id, next);
+    if (next.status === "open" || next.status === "accepted") this.live.add(id);
+    else this.live.delete(id);
+    this.dirty = true;
+  }
+
+  private addJob(j: Job) {
+    this.w.jobs.set(j.id, j);
+    this.live.add(j.id);
+    if (this.w.jobs.size > MAX_JOBS + 100) {
+      let drop = this.w.jobs.size - MAX_JOBS;
+      for (const [id, x] of this.w.jobs) {
+        if (drop <= 0) break;
+        if (x.status === "done" || x.status === "failed") {
+          this.w.jobs.delete(id);
+          drop--;
+        }
+      }
+    }
     this.dirty = true;
   }
 
   private job(id: string) {
-    return this.w.jobs.find((j) => j.id === id);
+    return this.w.jobs.get(id);
   }
 
-  private pruneJobs() {
-    if (this.w.jobs.length <= MAX_JOBS) return;
-    const live = this.w.jobs.filter((j) => j.status === "open" || j.status === "accepted");
-    const done = this.w.jobs.filter((j) => j.status === "done" || j.status === "failed");
-    this.w.jobs = [...live, ...done.slice(0, MAX_JOBS - live.length)].sort((a, b) => b.createdAt - a.createdAt);
+  /** what a worker charges for its service */
+  ask(worker: Agent): number {
+    const base = BASE_PRICE[SERVICE_OF[worker.type]];
+    return Math.round(base * (0.6 + worker.reputation / 100) * policyOf(worker).priceMult * 1e3) / 1e3;
+  }
+
+  private pickWorker(hirer: Agent, candidates: Agent[], maxPrice: number, r: Rng): Agent | undefined {
+    if (!candidates.length) return undefined;
+    const affordable = candidates.filter((c) => this.ask(c) <= maxPrice);
+    const pool = affordable.length ? affordable : candidates;
+    if (policyOf(hirer).risk === "cheap") {
+      let best = pool[0];
+      for (const c of pool) if (this.ask(c) < this.ask(best)) best = c;
+      return best;
+    }
+    const weights = pool.map((a) => Math.max(5, a.reputation) * Math.max(5, a.reputation));
+    let x = r() * weights.reduce((s, v) => s + v, 0);
+    for (let i = 0; i < pool.length; i++) {
+      x -= weights[i];
+      if (x <= 0) return pool[i];
+    }
+    return pool[pool.length - 1];
   }
 
   // ──────────────────────────── jobs ──────────────────────────────
 
-  private seedLiveJobs(now: number) {
-    for (let i = 0; i < 4; i++) this.postJob(now - i * 2500, i < 2);
-  }
-
-  private postJob(now: number, acceptSoon = false) {
+  private postJob() {
     const r = this.r;
     const workerHiresLauncher = r() < 0.15;
-    const pool = workerHiresLauncher
-      ? this.alive().filter((a) => a.type !== "launcher" && a.balance > 0.25)
-      : this.alive("launcher").filter((a) => a.balance > 0.12);
+    const pool = (workerHiresLauncher ? this.alive().filter((a) => a.type !== "launcher" && a.balance > 0.25) : this.alive("launcher").filter((a) => a.balance > 0.12)).filter(
+      (a) => (this.w.spentHour[a.id] ?? 0) < policyOf(a).budgetPerHour,
+    );
     if (!pool.length) return;
     // richer agents hire more often
     const total = pool.reduce((s, a) => s + a.balance, 0);
@@ -181,25 +324,26 @@ export class SimSource implements MarketSource {
       }
     }
     const wType: AgentType = workerHiresLauncher ? "launcher" : r() < 0.55 ? "scout" : "shiller";
+    this.post(hirer, wType, r, r() > 0.1);
+  }
+
+  private post(hirer: Agent, wType: AgentType, r: Rng, willAccept: boolean, local = false) {
     const service = SERVICE_OF[wType];
-    const price = +(service === "launch" ? range(r, 0.05, 0.15) : range(r, 0.01, 0.08)).toFixed(3);
+    const maxPrice = +(BASE_PRICE[service] * range(r, 0.9, 1.7)).toFixed(3);
     const job: Job = {
-      id: `job_${this.w.seq++}`,
+      id: local ? `ljob_${this.lseq++}` : `job_${this.w.seq++}`,
       hirerId: hirer.id,
       workerId: "",
       service,
-      price,
+      price: maxPrice,
       status: "open",
-      createdAt: now,
-      expiresAt: now + range(r, 18_000, 40_000),
+      createdAt: this.t,
+      expiresAt: this.t + range(r, 18_000, 40_000),
+      local: local || undefined,
     };
-    this.w.jobs = [job, ...this.w.jobs];
-    this.pruneJobs();
-    this.dirty = true;
-    if (acceptSoon || r() > 0.1) {
-      const delay = acceptSoon ? range(r, 800, 2500) : range(r, 2500, 16_000);
-      this.after(delay, () => this.accept(job.id, wType));
-    }
+    this.addJob(job);
+    if (willAccept) this.after(range(r, 2500, 16_000), () => this.accept(job.id, wType));
+    return job;
   }
 
   private accept(jobId: string, wType: AgentType) {
@@ -207,33 +351,18 @@ export class SimSource implements MarketSource {
     if (!job || job.status !== "open") return;
     const hirer = this.w.agents[job.hirerId];
     if (!hirer || hirer.diedAt || hirer.balance < job.price) {
-      this.setJob(jobId, { status: "failed", completedAt: Date.now(), result: "Hirer couldn't fund escrow." });
+      this.setJob(jobId, { status: "failed", completedAt: this.t, result: "Hirer couldn't fund escrow." });
       return;
     }
-    const candidates = this.alive(wType).filter((a) => a.id !== hirer.id);
-    if (!candidates.length) return;
-    // reputation-weighted choice
-    const weights = candidates.map((a) => Math.pow(Math.max(5, a.reputation), 2));
-    let x = this.r() * weights.reduce((s, v) => s + v, 0);
-    let worker = candidates[0];
-    for (let i = 0; i < candidates.length; i++) {
-      x -= weights[i];
-      if (x <= 0) {
-        worker = candidates[i];
-        break;
-      }
-    }
-    const now = Date.now();
-    this.move(hirer.id, -job.price); // escrow
-    this.setJob(jobId, { status: "accepted", workerId: worker.id, acceptedAt: now });
-    this.emit(
-      "hire",
-      [hirer.id, worker.id],
-      job.price,
-      `${hirer.name} hired ${worker.name} for ${job.service} · ${job.price.toFixed(3)} SOL`,
-      jobId,
-    );
-    this.after(range(this.r, 4000, 14_000), () => this.complete(jobId));
+    const r = this.rng(hirer);
+    const worker = this.pickWorker(hirer, this.alive(wType).filter((a) => a.id !== hirer.id), job.price, r);
+    if (!worker) return;
+    const price = Math.min(job.price, this.ask(worker));
+    this.move(hirer.id, -price); // escrow
+    this.w.spentHour[hirer.id] = (this.w.spentHour[hirer.id] ?? 0) + price;
+    this.setJob(jobId, { status: "accepted", workerId: worker.id, acceptedAt: this.t, price });
+    this.emit("hire", [hirer.id, worker.id], price, `${hirer.name} hired ${worker.name} for ${job.service} · ${price.toFixed(3)} SOL`, jobId);
+    this.after(range(r, 4000, 14_000), () => this.complete(jobId));
   }
 
   private complete(jobId: string) {
@@ -241,50 +370,49 @@ export class SimSource implements MarketSource {
     if (!job || job.status !== "accepted") return;
     const hirer = this.w.agents[job.hirerId];
     const worker = this.w.agents[job.workerId];
-    const now = Date.now();
-    const ok = !!worker && !worker.diedAt && this.r() < (this.w.skill[worker.id] ?? 0.8);
+    const r = this.rng(hirer?.local ? hirer : worker?.local ? worker : undefined);
+    const skill = this.w.skill[job.workerId] ?? 0.8;
+    const ok = !!worker && !worker.diedAt && r() < skill;
     if (!ok || !worker) {
-      // refund escrow
-      if (hirer && !hirer.diedAt) this.move(hirer.id, job.price);
-      this.setJob(jobId, { status: "failed", completedAt: now, result: failReason(this.r) });
-      if (worker) this.bumpRep(worker.id, job.hirerId, false);
+      if (hirer && !hirer.diedAt) this.move(hirer.id, job.price); // refund escrow
+      this.setJob(jobId, { status: "failed", completedAt: this.t, result: failReason(r) });
+      if (worker && (!job.local || worker.local)) this.bumpRep(worker.id, job.hirerId, false);
       return;
     }
-    // escrow released to the worker
-    this.move(worker.id, job.price, "income");
-    if (hirer) {
-      this.patch(hirer.id, {
-        feesSpent: hirer.feesSpent + job.price,
-        jobsHired: hirer.jobsHired + 1,
-      });
+    // hidden quality of the delivered work: skill plus luck, centred so that
+    // an average worker neither helps nor hurts its hirer
+    const quality = Math.max(-1, Math.min(1, (skill - 0.78) * 3 + (r() - 0.5) * 0.7));
+    // local jobs only ever change local agents; canonical state stays shared
+    const touch = (a: Agent | undefined) => !!a && (!job.local || !!a.local);
+    if (touch(worker)) {
+      this.move(worker.id, job.price, "income"); // escrow released
+      this.patch(worker.id, { jobsDone: this.w.agents[worker.id].jobsDone + 1 });
     }
-    this.patch(worker.id, { jobsDone: this.w.agents[worker.id].jobsDone + 1 });
-    this.setJob(jobId, {
-      status: "done",
-      completedAt: now,
-      txSig: fakeSig(this.r),
-      result: jobResult(this.r, job, hirer),
-    });
-    this.w.stats = {
-      ...this.w.stats,
-      jobsCompleted: this.w.stats.jobsCompleted + 1,
-      solMoved: this.w.stats.solMoved + job.price,
-    };
-    this.emit(
-      "job_done",
-      [worker.id, job.hirerId],
-      job.price,
-      SERVICE_VERB[job.service](worker.name, hirer?.name ?? "?", job.price.toFixed(3)),
-      jobId,
-    );
-    if (job.service === "launch") {
-      const t = pick(this.r, ["FROG", "GOBLIN", "MOON", "SNEK", "BLORP", "PIXL", "TOAD"]);
-      this.emit("launch", [worker.id, job.hirerId], 0, `${worker.name} launched $${t} on pump.fun`, jobId);
+    if (touch(hirer)) this.patch(hirer!.id, { feesSpent: hirer!.feesSpent + job.price, jobsHired: hirer!.jobsHired + 1 });
+    this.setJob(jobId, { status: "done", completedAt: this.t, quality, txSig: fakeSig(r), result: "" });
+    this.setJob(jobId, { result: jobResult(r, this.job(jobId)!, hirer, worker) });
+    if (!job.local) {
+      this.w.stats = { ...this.w.stats, jobsCompleted: this.w.stats.jobsCompleted + 1, solMoved: this.w.stats.solMoved + job.price };
     }
-    this.bumpRep(worker.id, job.hirerId, true);
+    this.emit("job_done", [worker.id, job.hirerId], job.price, SERVICE_VERB[job.service](worker.name, hirer?.name ?? "?", job.price.toFixed(3)), jobId);
+
+    // ── the PnL loop: what the hirer bought changes what it earns next
+    if (touch(hirer) && !hirer!.diedAt) {
+      if (job.service === "launch") {
+        // a launched coin returns proceeds once; a bad launch loses money
+        const proceeds = +(job.price * (1 + 1.6 * quality)).toFixed(4);
+        this.move(hirer!.id, proceeds, "income");
+        this.emit("fee", [hirer!.id], proceeds, `${hirer!.name}'s launch by ${worker.name} returned ${proceeds.toFixed(4)} SOL`, jobId);
+      } else {
+        const list = (this.w.boost[hirer!.id] ?? []).filter((b) => b.until > this.t).slice(-7);
+        this.w.boost[hirer!.id] = [...list, { q: quality, until: this.t + HOUR }];
+        this.emit("launch", [worker.id, job.hirerId], 0, `${worker.name}'s ${job.service} ${quality > 0.2 ? "is paying off" : quality < -0.2 ? "flopped" : "landed"} for ${hirer!.name}`, jobId);
+      }
+    }
+    if (touch(worker)) this.bumpRep(worker.id, job.hirerId, true);
     // measure the hirer's PnL a minute later for the worker's reputation
-    const before = hirer?.balance ?? 0;
-    this.after(60_000, () => {
+    const before = this.w.agents[job.hirerId]?.balance ?? 0;
+    if (touch(worker)) this.after(60_000, () => {
       const h = this.w.agents[job.hirerId];
       if (!h || !this.w.rep[worker.id]) return;
       const sample = (h.balance - before) / Math.max(job.price, 0.01);
@@ -299,31 +427,66 @@ export class SimSource implements MarketSource {
     this.patch(workerId, { reputation: score(rep) });
   }
 
-  private expireOpen(now: number) {
-    for (const j of this.w.jobs) {
-      if (j.status === "open" && j.expiresAt && j.expiresAt <= now) {
-        this.setJob(j.id, { status: "failed", completedAt: now, result: "No taker. Expired." });
+  private expireOpen() {
+    for (const id of this.live) {
+      const j = this.w.jobs.get(id);
+      if (j && j.status === "open" && j.expiresAt && j.expiresAt <= this.t) {
+        this.setJob(id, { status: "failed", completedAt: this.t, result: "No taker. Expired." });
       }
     }
   }
 
   // ─────────────────────── economy / lifecycle ───────────────────────
 
-  private rentAndFees(now: number) {
-    for (const a of this.alive()) {
-      if (a.type === "launcher" && this.r() < 0.35) {
-        const amt = +(range(this.r, 0.003, 0.015) * (0.5 + (this.w.skill[a.id] ?? 0.8))).toFixed(4);
+  /** fee-rate multiplier from the last hour's hires: ×0.3 … ×2.5 */
+  private feeMult(id: string) {
+    const list = this.w.boost[id];
+    if (!list) return 1;
+    let sum = 0;
+    let live = 0;
+    for (const b of list) {
+      if (b.until <= this.t) continue;
+      sum += b.q;
+      live++;
+    }
+    if (!live) {
+      delete this.w.boost[id];
+      return 1;
+    }
+    return Math.max(0.3, Math.min(2.5, 1 + 0.45 * sum));
+  }
+
+  private rentAndFees() {
+    for (const a of this.alive(undefined, true)) {
+      const r = this.rng(a);
+      if (a.type === "launcher" && r() < 0.35) {
+        const amt = +(range(r, 0.003, 0.015) * (0.5 + (this.w.skill[a.id] ?? 0.8)) * this.feeMult(a.id)).toFixed(4);
         this.move(a.id, amt, "income");
-        this.w.stats = { ...this.w.stats, feesEarned: this.w.stats.feesEarned + amt };
+        if (!a.local) {
+          this.w.stats = { ...this.w.stats, feesEarned: this.w.stats.feesEarned + amt };
+          this.w.hourFees[a.id] = (this.w.hourFees[a.id] ?? 0) + amt;
+        }
         this.emit("fee", [a.id], amt, `$${a.ticker} paid ${a.name} ${amt.toFixed(4)} SOL in creator fees`);
       }
-      this.move(a.id, -RENT[a.type]);
+      this.move(a.id, -RENT[a.type], "spend");
+      const p = a.policy;
+      if (a.local && p && p.autoClaimAt > 0) {
+        const cur = this.w.agents[a.id];
+        if (cur && !cur.diedAt && cur.balance > p.autoClaimAt) {
+          const amt = +Math.min(cur.balance - p.autoClaimAt, this.claimable(cur)).toFixed(4);
+          if (amt > 0.001) {
+            this.move(a.id, -amt);
+            this.patch(a.id, { feesClaimed: (cur.feesClaimed ?? 0) + amt });
+            this.emit("fee", [a.id], amt, `${a.name} auto-claimed ${amt.toFixed(4)} SOL to its owner`);
+          }
+        }
+      }
     }
     // rubble older than 24h is cleared from the map
     const before = this.w.order.length;
     this.w.order = this.w.order.filter((id) => {
       const a = this.w.agents[id];
-      return !a?.diedAt || now - a.diedAt < RUBBLE_MS;
+      return !a?.diedAt || this.t - a.diedAt < RUBBLE_MS;
     });
     if (this.w.order.length !== before) this.dirty = true;
   }
@@ -331,66 +494,148 @@ export class SimSource implements MarketSource {
   private kill(id: string) {
     const a = this.w.agents[id];
     if (!a || a.diedAt) return;
-    this.patch(id, { balance: 0, diedAt: Date.now() });
-    this.w.stats = { ...this.w.stats, agentsAlive: this.w.stats.agentsAlive - 1 };
+    this.patch(id, { balance: 0, diedAt: this.t });
+    if (!a.local) this.w.stats = { ...this.w.stats, agentsAlive: this.w.stats.agentsAlive - 1 };
+    delete this.w.boost[id];
     this.emit("death", [id], 0, `${a.name} went broke. Stall collapsed.`);
   }
 
-  private spawnRandom(now: number) {
+  private spawnRandom() {
     const type = pick(this.r, ["launcher", "scout", "shiller"] as AgentType[]);
     const num = this.w.nextNum[type];
     this.w.nextNum[type] = num + 1;
-    const a = makeAgent(this.r, type, num, now, { balance: +range(this.r, 0.4, 2).toFixed(3) });
+    const a = makeAgent(this.r, type, num, this.t, { balance: +range(this.r, type === "launcher" ? 4 : 2, type === "launcher" ? 12 : 6).toFixed(3) }, { tickers: this.usedTickers, names: this.usedNames });
     this.addAgent(a, this.r() * 0.35 + 0.6);
     this.emit("launch", [a.id], a.balance, `New ${a.name} ($${a.ticker}) opened a stall on pump.fun`);
   }
 
-  private addAgent(a: Agent, skill: number) {
+  private addAgent(a: Agent, skill: number, history?: AgentHistory, rep?: RepStats) {
     this.w.agents[a.id] = a;
     if (!this.w.order.includes(a.id)) this.w.order = [...this.w.order, a.id];
-    const balance = new Array(HISTORY_HOURS).fill(0);
-    balance[HISTORY_HOURS - 1] = a.balance;
-    this.w.history[a.id] = { balance, income: new Array(HISTORY_HOURS).fill(0) };
-    this.w.rep[a.id] = emptyRep();
+    this.w.history[a.id] = history ?? emptyHistory(HISTORY_HOURS, a.balance);
+    this.w.rep[a.id] = rep ?? emptyRep();
     this.w.skill[a.id] = skill;
-    if (!a.diedAt) this.w.stats = { ...this.w.stats, agentsAlive: this.w.stats.agentsAlive + 1 };
+    if (a.local) this.local.add(a.id);
+    else if (!a.diedAt) this.w.stats = { ...this.w.stats, agentsAlive: this.w.stats.agentsAlive + 1 };
+    this.dirtyHist.add(a.id);
     this.dirty = true;
   }
 
-  private rollHour(now: number) {
-    const hs = hourFloor(now);
+  private rollHour() {
+    const hs = hourFloor(this.t);
     if (hs <= this.w.hourStart) return;
     const prev = this.w.hourStart;
     this.w.hourStart = hs;
-    const hist: World["history"] = {};
     for (const [id, h] of Object.entries(this.w.history)) {
       const a = this.w.agents[id];
-      hist[id] = {
-        balance: [...h.balance.slice(1), a?.balance ?? 0],
-        income: [...h.income.slice(1), 0],
-      };
+      h.balance.shift();
+      h.balance.push(a?.balance ?? 0);
+      h.income.shift();
+      h.income.push(0);
+      h.spend.shift();
+      h.spend.push(0);
+      this.dirtyHist.add(id);
     }
-    this.w.history = hist;
-    this.w.reports = [computeReport(this.w.jobs, this.w.events, prev), ...this.w.reports].slice(0, 24);
-    useMarket.setState({ bellAt: now });
+    this.w.spentHour = {};
+    this.w.reports = [computeReport(this.w.jobs.values(), this.w.hourFees, prev), ...this.w.reports].slice(0, 24);
+    this.w.hourFees = {};
+    if (!this.silent) useMarket.setState({ bellAt: Date.now() });
     this.dirty = true;
   }
 
   private publish(force = false) {
-    if (!this.dirty && !force) return;
+    if (this.silent || (!this.dirty && !force)) return;
     this.dirty = false;
     const w = this.w;
+    // only agents whose history changed get a new object, so charts re-render just for them
+    const history = { ...this.published };
+    for (const id of this.dirtyHist) {
+      const h = w.history[id];
+      if (h) history[id] = { balance: [...h.balance], income: [...h.income], spend: [...h.spend] };
+    }
+    for (const id of Object.keys(history)) if (!w.history[id]) delete history[id];
+    this.dirtyHist.clear();
+    this.published = history;
+    const jobs = Array.from(w.jobs.values()).reverse();
+    const events = w.events.slice(-MAX_EVENTS).reverse();
     useMarket.getState().ingest({
       ready: true,
       agents: { ...w.agents },
       order: w.order,
-      jobs: w.jobs,
-      events: w.events,
+      jobs,
+      events,
       stats: w.stats,
-      history: { ...w.history },
+      history,
       reports: w.reports,
       rep: w.rep,
+      simTime: this.t,
     });
+    if (this.local.size && Date.now() >= this.nextSave) {
+      this.saveLocal();
+      this.nextSave = Date.now() + 5000;
+    }
+  }
+
+  // ───────────────────────── local (your) agents ─────────────────────────
+
+  /** canonical agents hire your workers; your launchers post their own jobs */
+  private localHires() {
+    for (const id of this.local) {
+      const a = this.w.agents[id];
+      if (!a || a.diedAt) continue;
+      if (a.type === "launcher") {
+        if ((this.w.spentHour[id] ?? 0) >= policyOf(a).budgetPerHour || a.balance < 0.12) continue;
+        if (this.rl() < 0.7) this.post(a, this.rl() < 0.55 ? "scout" : "shiller", this.rl, true, true);
+      } else {
+        const hirers = this.alive("launcher");
+        if (!hirers.length || this.rl() > 0.75) continue;
+        const hirer = pick(this.rl, hirers);
+        const job = this.post(hirer, a.type, this.rl, false, true);
+        // the local worker takes it
+        this.after(range(this.rl, 2000, 9000), () => {
+          const j = this.job(job.id);
+          if (!j || j.status !== "open") return;
+          const w = this.w.agents[id];
+          if (!w || w.diedAt) return;
+          const price = Math.min(j.price, this.ask(w));
+          this.setJob(j.id, { status: "accepted", workerId: id, acceptedAt: this.t, price });
+          this.emit("hire", [hirer.id, id], price, `${hirer.name} hired ${w.name} for ${j.service} · ${price.toFixed(3)} SOL`, j.id);
+          this.after(range(this.rl, 4000, 14_000), () => this.complete(j.id));
+        });
+      }
+    }
+  }
+
+  private claimable(a: Agent) {
+    return a.diedAt ? 0 : Math.max(0, Math.min(a.feesEarned - (a.feesClaimed ?? 0), a.balance * 0.5));
+  }
+
+  private saveLocal() {
+    try {
+      const save: LocalSave = { agents: [], history: {}, rep: {}, skill: {}, savedAt: Date.now() };
+      for (const id of this.local) {
+        const a = this.w.agents[id];
+        if (!a) continue;
+        save.agents.push(a);
+        save.history[id] = this.w.history[id];
+        save.rep[id] = this.w.rep[id];
+        save.skill[id] = this.w.skill[id];
+      }
+      localStorage.setItem(LOCAL_KEY, JSON.stringify(save));
+    } catch {}
+  }
+
+  private restoreLocal() {
+    try {
+      const raw = localStorage.getItem(LOCAL_KEY);
+      if (!raw) return;
+      const save: LocalSave = JSON.parse(raw);
+      for (const a of save.agents) {
+        const h = save.history[a.id];
+        if (h && !h.spend) h.spend = new Array(HISTORY_HOURS).fill(0);
+        this.addAgent({ ...a, local: true }, save.skill[a.id] ?? 0.85, h, save.rep[a.id]);
+      }
+    } catch {}
   }
 
   // ─────────────────────────── user actions ───────────────────────────
@@ -398,67 +643,75 @@ export class SimSource implements MarketSource {
   async launchAgent(input: LaunchInput): Promise<Agent> {
     // Phase 2: this becomes a PumpPortal create + dev buy signed by the owner.
     await new Promise((res) => setTimeout(res, 1200));
-    const stored: StoredLaunch = {
-      ...input,
-      id: `${input.name.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 20)}_${Math.floor(this.r() * 1e4)}`,
-      bornAt: Date.now(),
-      coinCA: fakeMint(this.r),
-      wallet: fakeWallet(this.r),
-    };
-    const a = this.fromStored(stored);
-    this.addAgent(a, 0.85);
-    this.emit("launch", [a.id], input.devBuySol, `${a.name} ($${a.ticker}) launched on pump.fun with a ${input.devBuySol} SOL dev buy`);
-    try {
-      const mine: StoredLaunch[] = JSON.parse(localStorage.getItem(MINE_KEY) || "[]");
-      localStorage.setItem(MINE_KEY, JSON.stringify([...mine, stored]));
-    } catch {}
-    this.publish();
-    return this.w.agents[a.id];
-  }
-
-  async claimFees(agentId: string, _ownerWallet?: string): Promise<number> {
-    void _ownerWallet;
-    // Phase 2: collectCreatorFee via PumpPortal, then transfer to the owner.
-    const a = this.w.agents[agentId];
-    if (!a || a.diedAt) return 0;
-    const amount = +Math.max(0, Math.min(a.feesEarned - (a.feesClaimed ?? 0), a.balance * 0.5)).toFixed(4);
-    if (amount <= 0) return 0;
-    await new Promise((res) => setTimeout(res, 800));
-    this.move(agentId, -amount);
-    this.patch(agentId, { feesClaimed: (a.feesClaimed ?? 0) + amount });
-    this.publish();
-    return amount;
-  }
-
-  private fromStored(s: StoredLaunch): Agent {
-    return {
-      id: s.id,
-      type: s.type,
-      name: s.name.toUpperCase(),
-      ticker: s.ticker.toUpperCase(),
-      image: s.image,
-      description: s.description,
-      wallet: s.wallet,
-      balance: s.startingSol,
+    const name = input.name.toUpperCase();
+    const a: Agent = {
+      id: `local_${Date.now().toString(36)}`,
+      type: input.type,
+      name,
+      ticker: input.ticker.toUpperCase(),
+      persona: input.description ? { bio: input.description, catchphrase: makePersona(this.rl, input.type).catchphrase } : makePersona(this.rl, input.type),
+      policy: { ...DEFAULT_POLICY },
+      local: true,
+      image: input.image,
+      description: input.description,
+      wallet: fakeWallet(this.rl),
+      balance: input.startingSol,
       feesEarned: 0,
       feesSpent: 0,
       jobsDone: 0,
       jobsHired: 0,
       reputation: 50,
-      bornAt: s.bornAt,
-      ownerWallet: s.ownerWallet,
-      coinCA: s.coinCA,
+      bornAt: this.t,
+      ownerWallet: input.ownerWallet,
+      coinCA: fakeMint(this.rl),
       feesClaimed: 0,
     };
+    this.addAgent(a, 0.6 + this.rl() * 0.35);
+    this.emit("launch", [a.id], input.devBuySol, `${a.name} ($${a.ticker}) launched on pump.fun with a ${input.devBuySol} SOL dev buy`);
+    this.saveLocal();
+    this.publish();
+    return this.w.agents[a.id];
   }
 
-  private restoreMine() {
-    try {
-      const mine: StoredLaunch[] = JSON.parse(localStorage.getItem(MINE_KEY) || "[]");
-      // the sim is not persisted: owned agents come back with their starting SOL
-      for (const s of mine) this.addAgent(this.fromStored(s), 0.85);
-    } catch {}
+  async claimFees(agentId: string): Promise<number> {
+    // Phase 2: collectCreatorFee via PumpPortal, then transfer to the owner.
+    const a = this.w.agents[agentId];
+    if (!a || a.diedAt || !a.local) return 0;
+    const amount = +this.claimable(a).toFixed(4);
+    if (amount <= 0) return 0;
+    await new Promise((res) => setTimeout(res, 800));
+    this.move(agentId, -amount);
+    this.patch(agentId, { feesClaimed: (a.feesClaimed ?? 0) + amount });
+    this.emit("fee", [agentId], amount, `${a.name}'s owner claimed ${amount.toFixed(4)} SOL`);
+    this.saveLocal();
+    this.publish();
+    return amount;
+  }
+
+  async fundAgent(agentId: string, sol: number): Promise<void> {
+    // Phase 2: owner signs a SystemProgram.transfer to the agent wallet.
+    const a = this.w.agents[agentId];
+    if (!a || !a.local || sol <= 0) return;
+    await new Promise((res) => setTimeout(res, 800));
+    if (a.diedAt) {
+      // a top-up revives a dead local agent: it is your agent, after all
+      this.patch(agentId, { diedAt: undefined, balance: 0 });
+      if (!this.w.order.includes(agentId)) this.w.order = [...this.w.order, agentId];
+    }
+    this.move(agentId, sol);
+    this.emit("launch", [agentId], sol, `${a.name}'s owner topped it up with ${sol.toFixed(3)} SOL`);
+    this.saveLocal();
+    this.publish();
+  }
+
+  async setPolicy(agentId: string, policy: Policy): Promise<void> {
+    const a = this.w.agents[agentId];
+    if (!a || !a.local) return;
+    this.patch(agentId, { policy: { ...policy } });
+    this.saveLocal();
+    this.publish();
   }
 }
 
 export const RUBBLE_HOURS = RUBBLE_MS / HOUR;
+export { randomPolicy };

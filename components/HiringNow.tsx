@@ -30,8 +30,8 @@ export default function HiringNow({ limit = 6 }: { limit?: number }) {
               <span className="min-w-0 flex-1 truncate">
                 <AgentLink id={j.hirerId} /> <span className="text-dim">wants {j.service === "attention" ? "attention" : `a ${j.service}`}</span>
               </span>
-              <Link href={`/jobs?job=${j.id}`} className="font-head text-[9px] text-amber">
-                {j.price.toFixed(3)}◎
+              <Link href={`/jobs?job=${j.id}`} className="font-head text-[9px] text-amber" title="max the hirer will pay; the worker's ask sets the final price">
+                ≤{j.price.toFixed(3)}◎
               </Link>
               <span className={`w-[44px] text-right font-head text-[9px] ${left < 8000 ? "text-blood" : "text-text"}`}>{mmss(left)}</span>
             </li>

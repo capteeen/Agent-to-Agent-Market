@@ -1,7 +1,7 @@
 // The isometric market renderer. Framework-free: MarketCanvas.tsx mounts it
 // and it reads the zustand store directly every frame (no React re-renders).
 
-import { useMarket } from "@/lib/store";
+import { useMarket, useUi } from "@/lib/store";
 import { RUBBLE_MS, type Agent, type AgentType, type MarketEvent } from "@/lib/types";
 import { earnings7d } from "@/lib/world";
 import { mulberry32 } from "@/lib/rng";
@@ -21,8 +21,11 @@ import {
 
 type P = { x: number; y: number };
 
+export type Selection = { agent: string } | { job: string };
+
 interface Walker {
   type: AgentType;
+  jobId?: string;
   path: P[]; // tile coords
   seg: number;
   t: number; // progress along current segment in tiles
@@ -50,7 +53,7 @@ interface Particle {
 export interface EngineOpts {
   cols: number;
   rows: number;
-  onSelect: (id: string | null) => void;
+  onSelect: (sel: Selection | null) => void;
   onHover: (id: string | null) => void;
 }
 
@@ -236,6 +239,7 @@ export class MarketEngine {
       ];
       const walker: Walker = {
         type: hirer.type,
+        jobId: e.jobId,
         path,
         seg: 0,
         t: 0,
@@ -389,8 +393,8 @@ export class MarketEngine {
       return p.life < p.max;
     });
 
-    // camera: follow the action unless the user panned recently
-    if (this.camTarget && now - this.userPanAt > 4000) {
+    // camera: follow the action unless the user panned recently or turned it off
+    if (this.camTarget && useUi.getState().follow && now - this.userPanAt > 4000) {
       const vw = this.canvas.width;
       const vh = this.canvas.height;
       const tx = this.camTarget.x - vw / 2;
@@ -450,7 +454,8 @@ export class MarketEngine {
 
   private dayState() {
     const d = new Date();
-    const h = this.forceHour ?? d.getUTCHours() + d.getUTCMinutes() / 60;
+    // light theme shows the market at noon; dark theme follows real UTC
+    const h = this.forceHour ?? (useUi.getState().night ? d.getUTCHours() + d.getUTCMinutes() / 60 : 12);
     const light = 0.5 - 0.5 * Math.cos((2 * Math.PI * h) / 24); // 0 midnight → 1 noon
     const dark = Math.max(0, Math.min(1, (0.6 - light) / 0.5));
     const dusk = Math.max(0, 1 - Math.min(Math.abs(h - 6.5), Math.abs(h - 18.5)) / 1.6);
@@ -549,7 +554,7 @@ export class MarketEngine {
             // shopkeeper peeking over the counter
             const spr = this.sprites[a.type].frames[Math.floor((t + slot * 137) / 600) % 4 === 0 ? 2 : 0];
             const bob = Math.floor((t + slot * 211) / 500) % 2;
-            ctx.drawImage(spr, Math.round(sx - 6), Math.round(y0 + st.ay - st.hw / 4 - 15 - bob));
+            ctx.drawImage(spr, Math.round(sx - 6), Math.round(y0 + st.ay - st.hw / 2 - 13 - bob));
             ctx.drawImage(st.over, x0, y0);
             ctx.restore();
             if (g) {
@@ -657,6 +662,16 @@ export class MarketEngine {
     return { x, y };
   }
 
+  private hitWalker(p: P): Walker | null {
+    let best: Walker | null = null;
+    for (const w of this.walkers) {
+      if (!w.jobId) continue;
+      const s = this.toScreen(w.pos.x, w.pos.y);
+      if (Math.abs(p.x - s.x) <= 8 && p.y >= s.y - 18 && p.y <= s.y + 3) best = w;
+    }
+    return best;
+  }
+
   private hit(p: P): string | null {
     const list = this.visibleAgents(Date.now());
     let best: { id: string; y: number } | null = null;
@@ -697,7 +712,8 @@ export class MarketEngine {
         return;
       }
       if (e.pointerType === "mouse") {
-        const id = this.hit(this.toWorld(e));
+        const p = this.toWorld(e);
+        const id = this.hitWalker(p) ? null : this.hit(p);
         if (id !== this.hovered) {
           this.hovered = id;
           c.style.cursor = id ? "pointer" : "grab";
@@ -707,9 +723,16 @@ export class MarketEngine {
     };
     const up = (e: PointerEvent) => {
       if (this.drag && !this.drag.moved) {
-        const id = this.hit(this.toWorld(e));
-        this.selected = id;
-        this.opts.onSelect(id);
+        const p = this.toWorld(e);
+        const wk = this.hitWalker(p);
+        if (wk?.jobId) {
+          this.selected = null;
+          this.opts.onSelect({ job: wk.jobId });
+        } else {
+          const id = this.hit(p);
+          this.selected = id;
+          this.opts.onSelect(id ? { agent: id } : null);
+        }
       }
       this.drag = null;
     };

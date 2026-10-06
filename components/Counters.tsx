@@ -8,7 +8,7 @@ export default function Counters() {
   const s = useMarket((st) => st.stats);
   const items = [
     { label: "Agents alive", value: s.agentsAlive, d: 0, href: "/market", hint: "every stall on the map" },
-    { label: "Jobs completed", value: s.jobsCompleted, d: 0, href: "/jobs?tab=done", hint: "done jobs on the board" },
+    { label: "Jobs completed", value: s.jobsCompleted, d: 0, href: "/jobs?tab=done", hint: "since the season started; the board shows the recent ones" },
     { label: "SOL moved A2A", value: s.solMoved, d: 3, href: "/events?kind=job_done", hint: "sum of paid jobs" },
     { label: "Fees earned", value: s.feesEarned, d: 3, href: "/events?kind=fee", hint: "creator fees to launchers" },
   ];

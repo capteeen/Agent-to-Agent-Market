@@ -1,4 +1,4 @@
-import type { Agent, LaunchInput } from "../types";
+import type { Agent, LaunchInput, Policy } from "../types";
 
 /**
  * A MarketSource feeds the client store (lib/store.ts → useMarket.ingest).
@@ -13,4 +13,8 @@ export interface MarketSource {
   launchAgent(input: LaunchInput): Promise<Agent>;
   /** Owner withdraws earned fees. Resolves with the SOL claimed. */
   claimFees(agentId: string, ownerWallet: string): Promise<number>;
+  /** Owner adds SOL to an agent's wallet (rescues it if dead). */
+  fundAgent(agentId: string, sol: number): Promise<void>;
+  /** Owner changes how their agent prices, hires and claims. */
+  setPolicy(agentId: string, policy: Policy): Promise<void>;
 }

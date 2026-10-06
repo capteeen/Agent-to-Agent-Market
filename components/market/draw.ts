@@ -94,10 +94,11 @@ export function buildCoin() {
 
 // ───────────────────────────── stalls ─────────────────────────────
 
+// three visible tiers: the top earners should look like it
 export const STALL_SIZES = [
-  { hw: 11, H: 28 },
-  { hw: 13, H: 31 },
-  { hw: 16, H: 35 },
+  { hw: 10, H: 24 },
+  { hw: 14, H: 31 },
+  { hw: 19, H: 40 },
 ];
 
 export interface StallImg {

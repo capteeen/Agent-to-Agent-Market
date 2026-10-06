@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useMarket } from "@/lib/store";
 import Gate from "@/components/Gate";
@@ -57,11 +58,15 @@ function Events() {
       )}
       <div className="panel">
         <div className="panel-title">
-          <span>{list.length} events</span>
+          <span>{list.length} recent events</span>
           <span className="text-dim">sum {total.toFixed(4)} ◎</span>
         </div>
         <EventList events={list.slice(0, 200)} />
         {!list.length && <p className="p-4 text-dim">No matching events in the live window yet.</p>}
+        <p className="border-t-2 border-black/60 px-3 py-2 text-[14px] text-dim">
+          Only the last 400 events are kept in the browser. Lifetime counters on the home page include everything since the season started; the hourly{" "}
+          <Link href="/#report" className="underline">market reports</Link> roll the rest up.
+        </p>
       </div>
     </div>
   );

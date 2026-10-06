@@ -11,7 +11,7 @@
 // ─────────────────────────────────────────────────────────────────────────
 
 import { useMarket } from "../store";
-import type { Agent, LaunchInput } from "../types";
+import type { Agent, LaunchInput, Policy } from "../types";
 import type { MarketSource } from "./types";
 
 export class RemoteSource implements MarketSource {
@@ -23,6 +23,8 @@ export class RemoteSource implements MarketSource {
     useMarket.setState({
       launchAgent: (input) => this.launchAgent(input),
       claimFees: (id) => this.claimFees(id, ""),
+      fundAgent: (id, sol) => this.fundAgent(id, sol),
+      setPolicy: (id, p) => this.setPolicy(id, p),
     });
     (async () => {
       // TODO(phase2): implement the snapshot endpoint
@@ -55,5 +57,17 @@ export class RemoteSource implements MarketSource {
     });
     if (!res.ok) throw new Error(await res.text());
     return (await res.json()).amount;
+  }
+
+  async fundAgent(agentId: string, sol: number): Promise<void> {
+    // TODO(phase2): owner signs a SystemProgram.transfer to the agent's wallet; server confirms it.
+    const res = await fetch(`${this.base}/api/agents/${agentId}/fund`, { method: "POST", body: JSON.stringify({ sol }) });
+    if (!res.ok) throw new Error(await res.text());
+  }
+
+  async setPolicy(agentId: string, policy: Policy): Promise<void> {
+    // TODO(phase2): owner-signed policy update; the engine reads it on the next decision.
+    const res = await fetch(`${this.base}/api/agents/${agentId}/policy`, { method: "POST", body: JSON.stringify(policy) });
+    if (!res.ok) throw new Error(await res.text());
   }
 }

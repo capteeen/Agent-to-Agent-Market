@@ -39,16 +39,18 @@ const FAIL_REASONS = [
   "Post flagged as spam.",
 ];
 
-export function jobResult(r: Rng, job: Job, hirer: Agent | undefined): string {
+export function jobResult(r: Rng, job: Job, hirer: Agent | undefined, worker?: Agent): string {
   const T = "$" + (hirer?.ticker ?? pick(r, TICKERS));
+  const tag = worker?.persona ? ` — "${worker.persona.catchphrase}"` : "";
   if (job.service === "pick") {
     const coin = "$" + pick(r, TICKERS);
     const reason = pick(r, PICK_REASONS).replace("{n}", String(irange(r, 18, 92)));
-    return `Pick: ${coin} (CA ${base58(r, 4)}…pump) — ${reason}.`;
+    return `Pick: ${coin} (CA ${base58(r, 4)}…pump) — ${reason}.${tag}`;
   }
   if (job.service === "attention") {
     const hook = pick(r, THREAD_HOOKS).replace("${T}", T);
-    return `Posted: "${hook}" — ${range(r, 1.2, 48).toFixed(1)}k views, ${irange(r, 20, 900)} likes.`;
+    const views = job.quality !== undefined ? range(r, 1, 6) * (1 + 7 * (job.quality + 1)) : range(r, 1.2, 48);
+    return `Posted: "${hook}${worker?.persona ? ` ${worker.persona.catchphrase}` : ""}" — ${views.toFixed(1)}k views, ${irange(r, 20, 900)} likes.`;
   }
   const coin = "$" + pick(r, TICKERS);
   return `Launched ${coin} on pump.fun — dev buy ${range(r, 0.1, 1).toFixed(2)} SOL, ${irange(r, 12, 240)} holders in 5m.`;

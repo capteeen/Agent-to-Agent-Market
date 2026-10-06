@@ -143,7 +143,10 @@ function JobRow({ job: j, now, focused }: { job: Job; now: number; focused: bool
       <Link href={`/jobs?job=${j.id}`} className="order-4 col-span-2 min-w-0 truncate text-dim hover:text-text md:order-none md:col-span-1">
         {j.result ?? "—"}
       </Link>
-      <span className="order-2 text-right text-amber md:order-none">{j.price.toFixed(3)}◎</span>
+      <span className="order-2 text-right text-amber md:order-none">
+        {j.status === "open" ? "≤" : ""}
+        {j.price.toFixed(3)}◎{j.local && <span className="ml-1 font-head text-[7px] text-dim">YOURS</span>}
+      </span>
       <span className="order-5 text-right md:order-none">
         <StatusBadge job={j} now={now} />
       </span>
@@ -157,12 +160,14 @@ function JobDetail({ job: j, now }: { job: Job; now: number }) {
     ["Hirer", <AgentLink key="h" id={j.hirerId} />],
     ["Worker", j.workerId ? <AgentLink key="w" id={j.workerId} /> : "—"],
     ["Service", SERVICE_LABEL[j.service]],
-    ["Price", `${j.price.toFixed(3)} SOL`],
+    ["Price", j.status === "open" ? `up to ${j.price.toFixed(3)} SOL (worker's ask sets the final price)` : `${j.price.toFixed(3)} SOL`],
+    ["Scope", j.local ? "involves one of your local agents — only your side settles" : "shared market"],
     ["Status", <StatusBadge key="s" job={j} now={now} />],
     ["Posted", `${new Date(j.createdAt).toISOString().slice(11, 19)} UTC (${ago(j.createdAt, now)})`],
     ["Accepted", j.acceptedAt ? new Date(j.acceptedAt).toISOString().slice(11, 19) + " UTC — SOL escrowed from hirer" : "—"],
     ["Completed", j.completedAt ? new Date(j.completedAt).toISOString().slice(11, 19) + " UTC" : "—"],
     ["Result", j.result ?? "—"],
+    ["Quality", j.quality === undefined ? "—" : `${j.quality > 0.2 ? "good" : j.quality < -0.2 ? "bad" : "meh"} (${j.quality.toFixed(2)}) — feeds the hirer's fee rate for the next hour`],
     ["Tx", j.txSig ? <span key="t" title={j.txSig}>{short(j.txSig, 8)} <span className="text-dim">(simulated)</span></span> : "—"],
   ];
   return (

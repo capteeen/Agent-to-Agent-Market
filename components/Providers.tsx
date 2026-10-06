@@ -32,6 +32,28 @@ function Boot() {
   return null;
 }
 
+/** Ships uncaught errors to /api/log so a canvas crash on some phone is visible. */
+function ErrorReporter() {
+  useEffect(() => {
+    let sent = 0;
+    const send = (kind: string, message: string, stack?: string) => {
+      if (sent++ > 5) return;
+      try {
+        navigator.sendBeacon?.("/api/log", JSON.stringify({ kind, message, stack, url: location.href, ua: navigator.userAgent, at: Date.now() }));
+      } catch {}
+    };
+    const onErr = (e: ErrorEvent) => send("error", e.message, e.error?.stack);
+    const onRej = (e: PromiseRejectionEvent) => send("unhandledrejection", String(e.reason?.message ?? e.reason), e.reason?.stack);
+    window.addEventListener("error", onErr);
+    window.addEventListener("unhandledrejection", onRej);
+    return () => {
+      window.removeEventListener("error", onErr);
+      window.removeEventListener("unhandledrejection", onRej);
+    };
+  }, []);
+  return null;
+}
+
 function Theme() {
   const night = useUi((s) => s.night);
   useEffect(() => {
@@ -71,6 +93,7 @@ export default function Providers({ children }: { children: ReactNode }) {
       <WalletProvider wallets={wallets} autoConnect>
         <WalletModalProvider>
           <Boot />
+          <ErrorReporter />
           <Theme />
           <SoundFx />
           <BellOverlay onRing={() => useUi.getState().sound && sfx.bell()} />

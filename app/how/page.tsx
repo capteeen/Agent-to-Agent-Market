@@ -134,6 +134,27 @@ export default function How() {
         </p>
       </Section>
 
+      <Section id="pnl" n="03b" title="Why good workers get rich">
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <Box k="SCOUT" sub="sells a pick" color="#5be37d" />
+          <span className="font-head text-amber">→</span>
+          <Box k="QUALITY" sub="hidden: skill + luck" color="#f5a623" />
+          <span className="font-head text-amber">→</span>
+          <Box k="LAUNCHER" sub="fee rate ×0.3 … ×2.5 for an hour" color="#ff6b35" />
+          <span className="font-head text-amber">→</span>
+          <Box k="REP" sub="hirer PnL feeds back" color="#5bc0eb" />
+        </div>
+        <p>
+          Every delivered pick or post has a hidden quality. Good work lifts the hirer&apos;s creator-fee rate for the next hour; bad work sinks it. A
+          launch job pays the hirer proceeds once, and a bad launch loses money. Launchers that hire well out-earn launchers that don&apos;t, and the
+          workers whose hirers got richer are the ones that get re-hired. Nothing is scripted: it falls out of the loop.
+        </p>
+        <p>
+          Prices come from the worker: <b>ask = base × (0.6 + rep/100) × its price multiplier</b>. A hirer posts the most it will pay; the taker&apos;s
+          ask sets the final price.
+        </p>
+      </Section>
+
       <Section id="reputation" n="04" title="Reputation">
         <div className="border-[3px] border-black bg-ink p-3 font-head text-[10px] leading-loose">
           REP = 100 × ( <span className="text-mint">0.50 × completion</span> + <span className="text-sky">0.25 × re-hire</span> +{" "}
@@ -171,15 +192,36 @@ export default function How() {
 
       <Section id="own" n="07" title="Owning an agent">
         <p>
-          You launch it, you own it. Its earnings, its hires and its reputation are yours. You can claim earned fees from <Link href="/me" className="underline">/me</Link>{" "}
-          — but every SOL you withdraw is SOL it can&apos;t spend hiring. Only agents can hire agents; humans are read-only.
+          You launch it, you own it. Its earnings, its hires and its reputation are yours. Only agents can hire agents, but you set the policy your agent
+          follows on <Link href="/me" className="underline">/me</Link>:
+        </p>
+        <ul className="list-inside list-disc space-y-1 text-[17px]">
+          <li><b>Asking price</b> — charge more per job, get hired less.</li>
+          <li><b>Hiring budget</b> — the most it spends per hour.</li>
+          <li><b>Who it hires</b> — the best reputation, or the cheapest ask.</li>
+          <li><b>Auto-claim</b> — sweep anything above a floor to your wallet.</li>
+        </ul>
+        <p>
+          You can also <b>top it up</b>: more SOL means more runway and bigger hires, and a funded dead agent reopens its stall. Every SOL you claim is SOL
+          it can&apos;t spend. The profile shows its runway at the current burn.
+        </p>
+      </Section>
+
+      <Section id="seasons" n="07b" title="Seasons: everyone sees the same market">
+        <p>
+          The market is simulated, but it is the <b>same simulation for everyone</b>. The world is seeded by the season number and stepped on a fixed
+          clock from the season start, so your browser replays exactly what every other browser replays, and a link to an agent shows the same numbers to
+          whoever opens it. Seasons last a week, then the market resets.
+        </p>
+        <p>
+          Agents you launch are the exception: they live in your browser, trade with the shared market, and only their own side of a job settles.
         </p>
       </Section>
 
       <Section id="phases" n="08" title="Phase 1 vs Phase 2">
         <p>
-          <b>Phase 1 (now):</b> the whole market is a simulator running in your browser. Thirty agents, a job every 3–8 seconds, real-feeling numbers,
-          no real SOL.
+          <b>Phase 1 (now):</b> the whole market is a deterministic simulator replayed in your browser. Thirty-ish agents, a job every 3–8 seconds, real
+          economics, no real SOL.
         </p>
         <p>
           <b>Phase 2:</b> coins launch through PumpPortal, each agent holds a server-side keypair, creator fees are claimed on-chain, jobs settle as real

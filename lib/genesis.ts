@@ -1,16 +1,17 @@
 // Deterministic genesis market: 30 living agents (+2 fresh rubble piles) with
 // 7 days of hourly history and ~2 hours of backfilled jobs, so the very first
-// frame is busy. Identities come from a fixed seed, so server-rendered OG
-// images and the browser simulator agree on who SCOUT_7 is.
+// frame is busy. Everything derives from the season number, so the server
+// (OG images, metadata) and every browser agree on who SLEEPLESS_OWL is.
 
 import { mulberry32, pick, range, irange, fakeMint, fakeWallet, fakeSig, type Rng } from "./rng";
 import { TICKERS, jobResult, failReason, SERVICE_VERB } from "./flavor";
+import { makeName, makePersona } from "./persona";
 import { emptyRep, recordOutcome, score, type RepStats } from "./reputation";
-import { HISTORY_HOURS, SERVICE_OF, type Agent, type AgentType, type Job, type MarketEvent } from "./types";
-import { HOUR, hourFloor, computeReport, type World } from "./world";
+import { HISTORY_HOURS, SERVICE_OF, type Agent, type AgentType, type Job, type MarketEvent, type Policy } from "./types";
+import { HOUR, hourFloor, computeReport, seasonIndex, seasonStart, type World } from "./world";
 
-export const GENESIS_SEED = 1337;
-const FLOW_SCALE = 8;
+/** The live sim trades every few seconds; per-type scale so history matches its pace. */
+const FLOW_SCALE: Record<AgentType, number> = { launcher: 90, scout: 45, shiller: 45 };
 
 const LAYOUT: AgentType[] = [
   ...Array<AgentType>(12).fill("launcher"),
@@ -27,26 +28,37 @@ function shuffle<T>(r: Rng, arr: T[]): T[] {
   return a;
 }
 
+export function randomPolicy(r: Rng, type: AgentType): Policy {
+  return {
+    priceMult: +range(r, 0.8, 1.3).toFixed(2),
+    budgetPerHour: type === "launcher" ? +range(r, 1.5, 4).toFixed(2) : +range(r, 0.3, 0.8).toFixed(2),
+    risk: r() < 0.6 ? "best" : "cheap",
+    autoClaimAt: 0,
+  };
+}
+
 export function makeAgent(
   r: Rng,
   type: AgentType,
   num: number,
   now: number,
   extra: Partial<Agent> = {},
-  usedTickers?: Set<string>,
+  used?: { tickers: Set<string>; names: Set<string> },
 ): Agent {
   let ticker = pick(r, TICKERS);
-  if (usedTickers) {
-    for (let k = 0; k < 10 && usedTickers.has(ticker); k++) ticker = pick(r, TICKERS);
-    if (usedTickers.has(ticker)) ticker = ticker + num;
-    usedTickers.add(ticker);
+  if (used) {
+    for (let k = 0; k < 10 && used.tickers.has(ticker); k++) ticker = pick(r, TICKERS);
+    if (used.tickers.has(ticker)) ticker = ticker + num;
+    used.tickers.add(ticker);
   }
-  const name = `${type.toUpperCase()}_${num}`;
+  const name = makeName(r, type, used?.names ?? new Set());
   return {
-    id: name.toLowerCase(),
+    id: `${type}_${num}`,
     type,
     name,
     ticker,
+    persona: makePersona(r, type),
+    policy: randomPolicy(r, type),
     image: "",
     wallet: fakeWallet(r),
     balance: 0,
@@ -63,9 +75,11 @@ export function makeAgent(
   };
 }
 
+/** Build the world as it stood at the start of the season containing `now`. */
 export function genesis(now = Date.now()): World {
-  const r = mulberry32(GENESIS_SEED);
-  const hourStart = hourFloor(now);
+  const start = seasonStart(now);
+  const r = mulberry32(1337 + seasonIndex(now));
+  const hourStart = hourFloor(start);
   const types = shuffle(r, LAYOUT);
   // two agents that died in the last day — rubble is part of the scenery
   types.splice(9, 0, "scout");
@@ -76,18 +90,21 @@ export function genesis(now = Date.now()): World {
   const world: World = {
     agents: {},
     order: [],
-    jobs: [],
+    jobs: new Map(),
     events: [],
     stats: { agentsAlive: 0, jobsCompleted: 0, solMoved: 0, feesEarned: 0 },
     history: {},
     reports: [],
     rep: {},
     skill: {},
+    boost: {},
+    spentHour: {},
+    hourFees: {},
     nextNum: { launcher: 1, scout: 1, shiller: 1 },
     seq: 1,
     hourStart,
   };
-  const used = new Set<string>();
+  const used = { tickers: new Set<string>(), names: new Set<string>() };
 
   types.forEach((type, i) => {
     const num = world.nextNum[type];
@@ -98,7 +115,6 @@ export function genesis(now = Date.now()): World {
     const skill = weak ? range(r, 0.45, 0.6) : range(r, 0.62, 0.98);
     const diedHoursAgo = dead ? range(r, 1.5, 20) : 0;
 
-    // hourly income/spend, walk balance backwards from today
     const income = new Array(HISTORY_HOURS).fill(0);
     const spend = new Array(HISTORY_HOURS).fill(0);
     let jobsDone = 0;
@@ -124,33 +140,33 @@ export function genesis(now = Date.now()): World {
       }
       if (weak) spend[h] += 0.004;
     }
-    // the live sim trades every few seconds; scale history to roughly match
+    const scale = FLOW_SCALE[type];
     for (let h = 0; h < HISTORY_HOURS; h++) {
-      income[h] *= FLOW_SCALE;
-      spend[h] *= FLOW_SCALE;
+      income[h] *= scale;
+      spend[h] *= scale;
     }
-    jobsDone *= FLOW_SCALE;
-    jobsHired *= FLOW_SCALE;
+    jobsDone *= scale;
+    jobsHired *= scale;
+
     // walk the wallet forward from birth
     const balance = new Array(HISTORY_HOURS).fill(0);
     const birthIdx = Math.max(0, HISTORY_HOURS - 1 - bornHoursAgo);
-    let b = type === "launcher" ? range(r, 0.8, 2.5) : range(r, 0.3, 1.2);
+    let b = type === "launcher" ? range(r, 5, 15) : range(r, 2, 6);
     for (let h = birthIdx; h < HISTORY_HOURS; h++) {
-      b = Math.max(0.02, b + income[h] - spend[h]);
+      b = Math.max(0.2, b + income[h] - spend[h]);
       balance[h] = b;
     }
     if (weak) {
-      // fading out: slide the last 12 hours down to a few cents
-      const target = range(r, 0.03, 0.07);
+      const target = range(r, 0.3, 0.7);
       const from = HISTORY_HOURS - 12;
-      const start = balance[from];
-      for (let h = from; h < HISTORY_HOURS; h++) balance[h] = start + ((target - start) * (h - from + 1)) / 12;
+      const s0 = balance[from];
+      for (let h = from; h < HISTORY_HOURS; h++) balance[h] = s0 + ((target - s0) * (h - from + 1)) / 12;
     }
     if (dead) {
       const deathIdx = HISTORY_HOURS - 1 - Math.floor(diedHoursAgo);
       const from = Math.max(birthIdx, deathIdx - 10);
-      const start = balance[from];
-      for (let h = from; h < deathIdx; h++) balance[h] = start * (1 - (h - from) / (deathIdx - from));
+      const s0 = balance[from];
+      for (let h = from; h < deathIdx; h++) balance[h] = s0 * (1 - (h - from) / (deathIdx - from));
       for (let h = deathIdx; h < HISTORY_HOURS; h++) balance[h] = 0;
     }
     const balanceNow = dead ? 0 : balance[HISTORY_HOURS - 1];
@@ -159,7 +175,7 @@ export function genesis(now = Date.now()): World {
     const older = bornHoursAgo > HISTORY_HOURS ? (bornHoursAgo - HISTORY_HOURS) / HISTORY_HOURS : 0;
 
     let rep: RepStats = emptyRep();
-    const repJobs = Math.min(30, Math.max(6, jobsDone + jobsHired));
+    const repJobs = Math.min(30, Math.max(6, Math.round(jobsDone + jobsHired) % 30));
     for (let k = 0; k < repJobs; k++) rep = recordOutcome(rep, `h${irange(r, 0, 6)}`, r() < skill);
     rep = { ...rep, pnlEma: range(r, -0.4, 0.6) * skill };
 
@@ -167,7 +183,7 @@ export function genesis(now = Date.now()): World {
       r,
       type,
       num,
-      now - bornHoursAgo * HOUR,
+      start - bornHoursAgo * HOUR,
       {
         balance: balanceNow,
         feesEarned: sumIncome * (1 + older),
@@ -175,13 +191,13 @@ export function genesis(now = Date.now()): World {
         jobsDone: Math.round(jobsDone * (1 + older)),
         jobsHired: Math.round(jobsHired * (1 + older)),
         reputation: score(rep),
-        diedAt: dead ? now - diedHoursAgo * HOUR : undefined,
+        diedAt: dead ? start - diedHoursAgo * HOUR : undefined,
       },
       used,
     );
     world.agents[agent.id] = agent;
     world.order.push(agent.id);
-    world.history[agent.id] = { balance, income };
+    world.history[agent.id] = { balance, income, spend };
     world.rep[agent.id] = rep;
     world.skill[agent.id] = skill;
   });
@@ -193,20 +209,19 @@ export function genesis(now = Date.now()): World {
     if (a.type === "launcher") world.stats.feesEarned += a.feesEarned;
   }
 
-  backfill(world, r, now);
+  backfill(world, r, start);
   return world;
 }
 
-/** ~2 hours of recent jobs & events. Display-only: balances already include them. */
+/** ~2 hours of recent jobs & events before the season start. Display-only. */
 function backfill(world: World, r: Rng, now: number) {
   const all = Object.values(world.agents);
   const alive = all.filter((a) => !a.diedAt);
   const launchers = alive.filter((a) => a.type === "launcher");
-  const jobs: Job[] = [];
   const events: MarketEvent[] = [];
-  const start = now - 2 * HOUR;
+  const begin = now - 2 * HOUR;
 
-  for (let t = start; t < now - 20_000; t += range(r, 18_000, 45_000)) {
+  for (let t = begin; t < now - 20_000; t += range(r, 18_000, 45_000)) {
     const hireLauncher = r() < 0.08;
     const hirer = hireLauncher ? pick(r, alive.filter((a) => a.type !== "launcher")) : pick(r, launchers);
     const wType: AgentType = hireLauncher ? "launcher" : r() < 0.55 ? "scout" : "shiller";
@@ -229,8 +244,8 @@ function backfill(world: World, r: Rng, now: number) {
       txSig: ok ? fakeSig(r) : undefined,
       result: "",
     };
-    job.result = ok ? jobResult(r, job, hirer) : failReason(r);
-    jobs.push(job);
+    job.result = ok ? jobResult(r, job, hirer, worker) : failReason(r);
+    world.jobs.set(job.id, job);
     events.push({
       id: `ev_${world.seq++}`,
       kind: "hire",
@@ -276,17 +291,9 @@ function backfill(world: World, r: Rng, now: number) {
       });
     }
   }
-  jobs.sort((a, b) => b.createdAt - a.createdAt);
-  events.sort((a, b) => b.at - a.at);
-  world.jobs = jobs.filter((j) => (j.completedAt ?? 0) < now);
-  world.events = events.filter((e) => e.at < now).slice(0, 400);
-  world.reports = [computeReport(world.jobs, world.events, world.hourStart - HOUR)];
-}
-
-/** Server-side lookup for OG images / metadata. */
-export function genesisAgent(id: string) {
-  const w = genesis();
-  const a = w.agents[id];
-  if (!a) return undefined;
-  return { agent: a, history: w.history[id] };
+  events.sort((a, b) => a.at - b.at);
+  world.events = events.filter((e) => e.at < now).slice(-400);
+  const fees: Record<string, number> = {};
+  for (const e of world.events) if (e.kind === "fee" && e.at >= world.hourStart - HOUR) fees[e.agentIds[0]] = (fees[e.agentIds[0]] ?? 0) + e.amount;
+  world.reports = [computeReport(world.jobs.values(), fees, world.hourStart - HOUR)];
 }

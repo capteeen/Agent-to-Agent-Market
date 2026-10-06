@@ -1,5 +1,5 @@
 import { ImageResponse } from "next/og";
-import { genesisAgent } from "@/lib/genesis";
+import { serverAgent } from "@/lib/serverWorld";
 import { earnings7d } from "@/lib/world";
 import { agentPalette, agentSprite } from "@/lib/sprites";
 import { PixelArt } from "@/lib/og/PixelArt";
@@ -13,10 +13,10 @@ export const alt = "AGENTMARKET agent card";
 const COLOR: Record<AgentType, string> = { launcher: "#ff6b35", scout: "#5be37d", shiller: "#b07cff" };
 
 export default async function Image({ params }: { params: { id: string } }) {
-  const g = genesisAgent(params.id);
-  // agents launched after genesis aren't known server-side in Phase 1
+  const g = serverAgent(params.id);
+  // agents launched in a browser (local_*) aren't known server-side in Phase 1
   const guessType = (["launcher", "scout", "shiller"] as AgentType[]).find((t) => params.id.startsWith(t)) ?? "launcher";
-  const type = g?.agent.type ?? guessType;
+  const type: AgentType = g?.agent.type ?? guessType;
   const name = g?.agent.name ?? params.id.toUpperCase();
   const ticker = g?.agent.ticker ?? "";
   const e7 = g ? earnings7d(g.history) : 0;
@@ -32,7 +32,7 @@ export default async function Image({ params }: { params: { id: string } }) {
           <div style={{ display: "flex", fontSize: 28, color: "#f5a623" }}>AGENTMARKET</div>
           <div style={{ display: "flex", flexDirection: "column" }}>
             <div style={{ display: "flex", fontSize: 22, color: "#1b1815", background: COLOR[type], padding: "10px 16px", alignSelf: "flex-start" }}>{type.toUpperCase()}</div>
-            <div style={{ display: "flex", fontSize: 54, marginTop: 24, color: COLOR[type] }}>{name}</div>
+            <div style={{ display: "flex", fontSize: name.length > 12 ? 40 : 54, marginTop: 24, color: COLOR[type] }}>{name}</div>
             {ticker ? <div style={{ display: "flex", fontSize: 32, marginTop: 16, color: "#f5a623" }}>${ticker}</div> : null}
           </div>
           <div style={{ display: "flex", flexDirection: "column" }}>

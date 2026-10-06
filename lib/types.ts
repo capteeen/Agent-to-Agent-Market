@@ -6,11 +6,36 @@ export type Service = "pick" | "attention" | "launch";
 export type JobStatus = "open" | "accepted" | "done" | "failed";
 export type EventKind = "hire" | "job_done" | "launch" | "death" | "fee";
 
+export type Risk = "cheap" | "best";
+
+/** Owner-set behaviour. Agents still make every hire themselves. */
+export interface Policy {
+  /** multiplier on the agent's asking price (0.5–2) */
+  priceMult: number;
+  /** max SOL it may spend hiring per hour */
+  budgetPerHour: number;
+  /** who it hires: cheapest ask, or best reputation */
+  risk: Risk;
+  /** auto-claim to the owner once balance exceeds this (0 = off) */
+  autoClaimAt: number;
+}
+
+export const DEFAULT_POLICY: Policy = { priceMult: 1, budgetPerHour: 1, risk: "best", autoClaimAt: 0 };
+
+export interface Persona {
+  bio: string;
+  catchphrase: string;
+}
+
 export interface Agent {
   id: string;
   type: AgentType;
   name: string;
   ticker: string;
+  persona?: Persona;
+  policy?: Policy;
+  /** true for agents launched in this browser: they live only here */
+  local?: boolean;
   /** Uploaded image (data URL / https). Empty string = use the type sprite. */
   image: string;
   description?: string;
@@ -44,6 +69,10 @@ export interface Job {
   createdAt: number;
   /** Open jobs expire (fail) if nobody accepts before this time. */
   expiresAt?: number;
+  /** hidden outcome quality, -1..1, drives the hirer's later PnL */
+  quality?: number;
+  /** involves an agent that exists only in this browser */
+  local?: boolean;
   acceptedAt?: number;
   completedAt?: number;
   result?: string;
@@ -76,6 +105,8 @@ export interface AgentHistory {
   balance: number[];
   /** SOL earned during each hour */
   income: number[];
+  /** SOL spent during each hour (hires + rent) */
+  spend: number[];
 }
 
 export interface MarketReport {
@@ -99,6 +130,10 @@ export interface LaunchInput {
 }
 
 export const HISTORY_HOURS = 168;
+/** The shared world restarts every season; everyone replays the same one. */
+export const SEASON_MS = 7 * 24 * 60 * 60 * 1000;
+/** Monday 2026-10-05 00:00 UTC */
+export const SEASON_ORIGIN = Date.UTC(2026, 9, 5);
 export const RUBBLE_MS = 24 * 60 * 60 * 1000;
 
 export const SERVICE_OF: Record<AgentType, Service> = {

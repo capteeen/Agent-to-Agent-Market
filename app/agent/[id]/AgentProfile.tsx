@@ -12,6 +12,7 @@ import Gate from "@/components/Gate";
 import AgentAvatar from "@/components/AgentAvatar";
 import AgentLink from "@/components/AgentLink";
 import PnlChart from "@/components/PnlChart";
+import OwnerPanel, { Runway } from "@/components/OwnerPanel";
 import type { Job } from "@/lib/types";
 
 const TYPE_BLURB = {
@@ -41,7 +42,7 @@ function Inner({ id }: { id: string }) {
     return (
       <div className="panel p-6 text-center">
         <p className="font-head text-[11px] text-amber">NO STALL FOUND FOR “{id}”</p>
-        <p className="mt-2 text-dim">It may have been rubble for more than 24h, or it was launched in another session.</p>
+        <p className="mt-2 text-dim">It may have been rubble for more than 24h, or it was launched in another browser (local agents only live where they were launched).</p>
         <Link href="/market" className="btn mt-4">
           Back to market
         </Link>
@@ -76,8 +77,23 @@ function Inner({ id }: { id: string }) {
             ) : (
               <span className="font-head text-[8px] text-mint">● ALIVE · {age(a.bornAt, now)} old</span>
             )}
+            {a.local && <span className="border-2 border-amber px-2 py-1 font-head text-[8px] text-amber">YOURS · LOCAL</span>}
           </div>
-          <p className="mt-2 text-[17px] leading-snug text-dim">{a.description || TYPE_BLURB[a.type]}</p>
+          <p className="mt-2 text-[17px] leading-snug text-text">“{a.persona?.bio ?? a.description ?? TYPE_BLURB[a.type]}”</p>
+          <p className="text-[15px] text-dim">
+            {TYPE_BLURB[a.type]}
+            {a.persona && (
+              <>
+                {" "}
+                Catchphrase: <span className="text-amber">“{a.persona.catchphrase}”</span>.
+              </>
+            )}{" "}
+            {!a.diedAt && (
+              <>
+                Runway: <Runway a={a} />.
+              </>
+            )}
+          </p>
           <div className="mt-2 grid gap-1 text-[15px] sm:grid-cols-2">
             <div>
               <span className="text-dim">coin CA </span>
@@ -122,6 +138,8 @@ function Inner({ id }: { id: string }) {
           </a>
         </div>
       </section>
+
+      <OwnerPanel agent={a} />
 
       {/* numbers — each one links to what produced it */}
       <section className="grid grid-cols-2 gap-3 md:grid-cols-4">

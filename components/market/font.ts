@@ -30,18 +30,28 @@ export function drawText(ctx: CanvasRenderingContext2D, s: string, x: number, y:
   }
 }
 
-/** Pre-render a label on a dark plate. */
-export function labelCanvas(s: string, fg: string, bg = "#1b1815", border = "#000"): HTMLCanvasElement {
-  const w = textWidth(s) + 4;
-  const h = 9;
+/** Pre-render a label as a little hanging wooden sign. */
+export function labelCanvas(s: string, fg: string, bg = "#6b4a2c", border = "#2a1a0e"): HTMLCanvasElement {
+  const w = textWidth(s) + 6;
+  const h = 11;
   const c = document.createElement("canvas");
   c.width = w;
   c.height = h;
   const ctx = c.getContext("2d")!;
   ctx.fillStyle = border;
-  ctx.fillRect(0, 0, w, h);
+  ctx.fillRect(0, 1, w, h - 1);
   ctx.fillStyle = bg;
-  ctx.fillRect(1, 1, w - 2, h - 2);
-  drawText(ctx, s, 2, 2, fg);
+  ctx.fillRect(1, 2, w - 2, h - 3);
+  ctx.fillStyle = "#8a5a30";
+  ctx.fillRect(1, 2, w - 2, 1);
+  // nails
+  ctx.fillStyle = "#d9c9a8";
+  ctx.fillRect(2, 3, 1, 1);
+  ctx.fillRect(w - 3, 3, 1, 1);
+  // hanging chain
+  ctx.fillStyle = border;
+  ctx.fillRect(Math.floor(w / 2) - 2, 0, 1, 1);
+  ctx.fillRect(Math.floor(w / 2) + 1, 0, 1, 1);
+  drawText(ctx, s, 3, 4, fg);
   return c;
 }

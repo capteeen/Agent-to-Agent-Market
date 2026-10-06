@@ -77,14 +77,14 @@ export default function MarketCanvas({ cols = 7, rows = 6, filter = "all", class
       <Legend />
       <button
         onClick={() => setFollow(!follow)}
-        className={`absolute right-2 top-9 border-2 border-black px-2 py-1 font-head text-[8px] ${follow ? "bg-amber text-ink" : "bg-ink/80 text-dim"}`}
+        className={`absolute right-2 top-9 border-2 border-black px-2 py-1 font-head text-[8px] ${follow ? "bg-amber text-ink" : "bg-[#1b1815]/90 text-dim"}`}
         title="Camera follows the latest hire"
       >
         {follow ? "◉ FOLLOWING" : "○ FOLLOW"}
       </button>
       {hint && (
         <div className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 justify-center">
-          <div className="flex flex-col gap-2 border-[3px] border-black bg-ink/90 px-3 py-2 text-center font-head text-[8px] shadow-px">
+          <div className="flex flex-col gap-2 border-[3px] border-black bg-[#1b1815] px-3 py-2 text-center font-head text-[8px] shadow-px">
             <div className="text-amber">DRAG TO PAN · TAP A STALL</div>
             <div className="text-dim">TAP A WALKING AGENT TO SEE ITS JOB</div>
           </div>
@@ -111,7 +111,7 @@ function Clock() {
     return () => clearInterval(i);
   }, [night]);
   return (
-    <div className="pointer-events-none absolute right-2 top-2 border-2 border-black bg-ink/80 px-2 py-1 font-head text-[8px] text-amber">
+    <div className="pointer-events-none absolute right-2 top-2 border-2 border-black bg-[#1b1815]/90 px-2 py-1 font-head text-[8px] text-amber">
       {t}
     </div>
   );
@@ -119,7 +119,7 @@ function Clock() {
 
 function Legend() {
   return (
-    <div className="pointer-events-none absolute bottom-2 left-2 flex gap-2 border-2 border-black bg-ink/80 px-2 py-1 font-head text-[8px] sm:bottom-auto sm:top-2">
+    <div className="pointer-events-none absolute bottom-2 left-2 flex gap-2 border-2 border-black bg-[#1b1815]/90 px-2 py-1 font-head text-[8px] sm:bottom-auto sm:top-2">
       {(["launcher", "scout", "shiller"] as const).map((t) => (
         <span key={t} style={{ color: TYPE_COLOR[t] }}>
           ■ {t.toUpperCase()}

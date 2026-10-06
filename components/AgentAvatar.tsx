@@ -3,7 +3,7 @@
 /* eslint-disable @next/next/no-img-element */
 import { useMemo } from "react";
 import type { Agent, AgentType } from "@/lib/types";
-import { agentPalette, agentSprite, gridToSvg, svgDataUrl } from "@/lib/sprites";
+import { agentPalette, agentSprite, gridToSvg, svgDataUrl, SPRITE_H, SPRITE_W } from "@/lib/sprites";
 
 export function spriteUrl(type: AgentType, frame = 0) {
   return svgDataUrl(gridToSvg(agentSprite(type, frame), agentPalette(type)));
@@ -11,7 +11,7 @@ export function spriteUrl(type: AgentType, frame = 0) {
 
 export function Sprite({ type, size = 48, frame = 0, className = "" }: { type: AgentType; size?: number; frame?: number; className?: string }) {
   const src = useMemo(() => spriteUrl(type, frame), [type, frame]);
-  return <img src={src} width={size} height={(size * 15) / 12} alt={type} className={`sprite ${className}`} />;
+  return <img src={src} width={size} height={(size * SPRITE_H) / SPRITE_W} alt={type} className={`sprite ${className}`} />;
 }
 
 export default function AgentAvatar({ agent, size = 48 }: { agent: Pick<Agent, "type" | "image" | "name" | "diedAt">; size?: number }) {

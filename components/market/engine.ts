@@ -9,15 +9,21 @@ import { drawText, labelCanvas, textWidth } from "./font";
 import {
   TW,
   TH,
+  SPRITE_HALF,
+  buildCloud,
   buildCoin,
   buildGround,
+  buildProps,
   buildRubble,
   buildSprites,
   buildStall,
   diamond,
+  type CellKind,
+  type PropImg,
   type SpriteSet,
   type StallImg,
 } from "./draw";
+import { SPRITE_H } from "@/lib/sprites";
 
 type P = { x: number; y: number };
 
@@ -46,7 +52,7 @@ interface Particle {
   life: number;
   max: number;
   color?: string;
-  kind: "coin" | "dust" | "spark";
+  kind: "coin" | "dust" | "spark" | "firefly";
   text?: string;
 }
 
@@ -90,6 +96,11 @@ export class MarketEngine {
   private drag: { x: number; y: number; cx: number; cy: number; moved: boolean } | null = null;
   private scale = 2;
   private stars: P[] = [];
+  private clouds: { img: HTMLCanvasElement; x: number; y: number; v: number }[] = [];
+  private propImgs = buildProps();
+  /** static scenery, depth-sorted with everything else */
+  private props: { p: PropImg; gx: number; gy: number }[] = [];
+  private fireflyAt = 0;
   filter: AgentType | "all" = "all";
   selected: string | null = null;
   hovered: string | null = null;
@@ -101,18 +112,40 @@ export class MarketEngine {
     private opts: EngineOpts,
   ) {
     this.ctx = canvas.getContext("2d")!;
-    this.Gx = opts.cols * 2 + 1;
-    this.Gy = opts.rows * 2 + 1;
+    // plots on odd inner cells, cobbled paths between them, a garden ring around it all
+    this.Gx = opts.cols * 2 + 3;
+    this.Gy = opts.rows * 2 + 3;
     this.mapW = (this.Gx + this.Gy) * (TW / 2) + PAD * 2;
-    this.mapH = (this.Gx + this.Gy) * (TH / 2) + HEAD + 16;
-    this.ground = buildGround(this.Gx, this.Gy, (gx, gy) => this.toScreen(gx, gy), this.mapW, this.mapH);
+    this.mapH = (this.Gx + this.Gy) * (TH / 2) + HEAD + 20;
+    const kind = (gx: number, gy: number): CellKind => {
+      if (gx === 0 || gy === 0 || gx === this.Gx - 1 || gy === this.Gy - 1) return "garden";
+      return (gx - 1) % 2 === 1 && (gy - 1) % 2 === 1 ? "plot" : "path";
+    };
+    this.ground = buildGround(this.Gx, this.Gy, kind, (gx, gy) => this.toScreen(gx, gy), this.mapW, this.mapH);
     const r = mulberry32(42);
     this.slots = [];
-    for (let j = 0; j < opts.rows; j++) for (let i = 0; i < opts.cols; i++) this.slots.push({ x: i, y: j });
-    // fill from the middle out so a sparse market still looks like a plaza
     const mid = { x: (opts.cols - 1) / 2, y: (opts.rows - 1) / 2 };
+    const plaza = opts.cols % 2 === 1 && opts.rows % 2 === 1;
+    for (let j = 0; j < opts.rows; j++)
+      for (let i = 0; i < opts.cols; i++) {
+        if (plaza && i === mid.x && j === mid.y) continue; // the well sits here
+        this.slots.push({ x: i, y: j });
+      }
+    // fill from the middle out so a sparse market still looks like a plaza
     this.slots.sort((a, b) => Math.hypot(a.x - mid.x, a.y - mid.y) - Math.hypot(b.x - mid.x, b.y - mid.y) + (r() - 0.5) * 1.2);
+    if (plaza) this.props.push({ p: this.propImgs.well, gx: mid.x * 2 + 2.5, gy: mid.y * 2 + 2.5 });
+    // scenery on the garden ring; lamp posts at the corners
+    for (let gy = 0; gy < this.Gy; gy++)
+      for (let gx = 0; gx < this.Gx; gx++) {
+        if (kind(gx, gy) !== "garden") continue;
+        const corner = (gx === 0 || gx === this.Gx - 1) && (gy === 0 || gy === this.Gy - 1);
+        const roll = r();
+        const name = corner ? "lamp" : roll < 0.3 ? "tree" : roll < 0.5 ? "bush" : roll < 0.58 ? "barrel" : roll < 0.64 ? "crate" : roll < 0.68 ? "sign" : "";
+        if (!name) continue;
+        this.props.push({ p: this.propImgs[name], gx: gx + 0.3 + r() * 0.4, gy: gy + 0.3 + r() * 0.4 });
+      }
     for (let i = 0; i < 60; i++) this.stars.push({ x: r(), y: r() });
+    for (let i = 0; i < 4; i++) this.clouds.push({ img: buildCloud(11 + i * 7), x: r() * 1.2, y: 0.02 + r() * 0.12, v: 0.004 + r() * 0.004 });
     for (let i = 0; i < 5; i++) this.spawnAmbient();
     this.bindPointer();
   }
@@ -123,7 +156,7 @@ export class MarketEngine {
 
   private slotCenter(slot: number): P {
     const s = this.slots[slot];
-    return { x: s.x * 2 + 1.5, y: s.y * 2 + 1.5 };
+    return { x: s.x * 2 + 2.5, y: s.y * 2 + 2.5 };
   }
 
   // ─────────────────────────── lifecycle ───────────────────────────
@@ -309,7 +342,7 @@ export class MarketEngine {
 
   private spawnAmbient() {
     const types: AgentType[] = ["launcher", "scout", "shiller"];
-    const rand = (n: number) => Math.floor(Math.random() * n) * 2 + 0.5;
+    const rand = (n: number) => Math.floor(Math.random() * n) * 2 + 1.5;
     const start = { x: rand(this.opts.cols + 1), y: rand(this.opts.rows + 1) };
     const walker: Walker = {
       type: types[Math.floor(Math.random() * 3)],
@@ -329,7 +362,7 @@ export class MarketEngine {
   }
 
   private retarget(w: Walker) {
-    const rand = (n: number) => Math.floor(Math.random() * n) * 2 + 0.5;
+    const rand = (n: number) => Math.floor(Math.random() * n) * 2 + 1.5;
     const to = { x: rand(this.opts.cols + 1), y: rand(this.opts.rows + 1) };
     w.path = [{ ...w.pos }, { x: to.x, y: w.pos.y }, to];
     w.seg = 0;
@@ -385,6 +418,20 @@ export class MarketEngine {
     }
     this.walkers = keep;
 
+    for (const c of this.clouds) {
+      c.x += (c.v * dt) / 1000;
+      if (c.x > 1.1) c.x = -0.2;
+    }
+    // fireflies drift over the garden at night
+    const dark = this.dayState().dark;
+    if (dark > 0.5 && now > this.fireflyAt) {
+      this.fireflyAt = now + 400;
+      const edge = Math.random() < 0.5;
+      const gx = edge ? Math.random() * this.Gx : Math.random() < 0.5 ? 0.5 : this.Gx - 0.5;
+      const gy = edge ? (Math.random() < 0.5 ? 0.5 : this.Gy - 0.5) : Math.random() * this.Gy;
+      const s = this.toScreen(gx, gy);
+      this.particles.push({ x: s.x, y: s.y - 6 - Math.random() * 10, vx: (Math.random() - 0.5) * 8, vy: -2 - Math.random() * 4, life: 0, max: 2500 + Math.random() * 2000, kind: "firefly", color: "#d8ff5a" });
+    }
     this.particles = this.particles.filter((p) => {
       p.life += dt;
       p.x += (p.vx * dt) / 1000;
@@ -482,6 +529,13 @@ export class MarketEngine {
         ctx.fillRect(Math.floor(s.x * vw), Math.floor(s.y * vh), 1, 1);
       }
     }
+    // a stepped glow near the horizon (pixel gradient)
+    ctx.fillStyle = mix(mix("#8a6a48", "#1a1830", day.dark), "#a0502a", day.dusk * 0.5);
+    for (let i = 0; i < 5; i++) {
+      ctx.globalAlpha = 0.06 * (i + 1);
+      ctx.fillRect(0, Math.round(vh * (0.2 + i * 0.03)), vw, Math.round(vh * 0.03));
+    }
+    ctx.globalAlpha = 1;
     // sun / moon arcs across the top-left → top-right
     const arcT = ((day.h + 18) % 12) / 12;
     const isSun = day.h >= 6 && day.h < 18;
@@ -493,6 +547,11 @@ export class MarketEngine {
     if (!isSun) {
       ctx.fillStyle = mix(sky, "#7a3b22", day.dusk * 0.6);
       ctx.fillRect(bx + 3, by, 5, 6);
+    }
+    if (day.dark < 0.9) {
+      ctx.globalAlpha = (1 - day.dark) * 0.9;
+      for (const c of this.clouds) ctx.drawImage(c.img, Math.round(c.x * vw), Math.round(c.y * vh));
+      ctx.globalAlpha = 1;
     }
 
     const shakeX = this.shake > 0 ? Math.round((Math.random() - 0.5) * 3) : 0;
@@ -554,7 +613,7 @@ export class MarketEngine {
             // shopkeeper peeking over the counter
             const spr = this.sprites[a.type].frames[Math.floor((t + slot * 137) / 600) % 4 === 0 ? 2 : 0];
             const bob = Math.floor((t + slot * 211) / 500) % 2;
-            ctx.drawImage(spr, Math.round(sx - 6), Math.round(y0 + st.ay - st.hw / 2 - 13 - bob));
+            ctx.drawImage(spr, Math.round(sx - SPRITE_HALF), Math.round(y0 + st.ay - st.hw / 2 - SPRITE_H + 2 - bob));
             ctx.drawImage(st.over, x0, y0);
             ctx.restore();
             if (g) {
@@ -563,19 +622,28 @@ export class MarketEngine {
               diamond(ctx, sx, y0 + st.ay - st.H, st.hw + 3, "#f5a623");
               ctx.globalCompositeOperation = "source-over";
             }
-            lights.push({ x: sx + st.hw - 2, y: y0 + st.ay - st.H + st.hw / 2 + 4 });
+            for (const l of st.lights) lights.push({ x: sx + l.x, y: y0 + st.ay + l.y });
           }
           // labels for the bigger stalls, rubble, and whatever is hovered / busy
           const size = this.sizeOf.get(a.id) ?? 0;
-          const showLabel = dead || size >= 1 || this.hovered === a.id || this.selected === a.id || this.glow.has(a.id);
+          const big = vw >= 560;
+          const showLabel = dead || size >= 2 || (big && size >= 1) || this.hovered === a.id || this.selected === a.id || this.glow.has(a.id);
           if (!showLabel) return;
           ctx.globalAlpha = dim ? 0.3 : 1;
           const lbl = this.label(a);
-          const ly = dead ? sy - 26 : sy - (this.stall(a.type, size).H + 18);
+          const ly = dead ? sy - 27 : sy - (this.stall(a.type, size).H + 22 + (size >= 1 ? 8 : 0));
           ctx.drawImage(lbl, Math.round(sx - lbl.width / 2), Math.round(ly));
           ctx.globalAlpha = 1;
         },
       });
+    }
+
+    for (const pr of this.props) {
+      const s = this.toScreen(pr.gx, pr.gy);
+      const sx = Math.round(s.x + ox);
+      const sy = Math.round(s.y + oy);
+      if (pr.p.light) lights.push({ x: sx + pr.p.light.x, y: sy + pr.p.light.y });
+      ents.push({ y: s.y - 0.1, draw: () => ctx.drawImage(pr.p.img, sx - pr.p.ax, sy - pr.p.ay) });
     }
 
     for (const w of this.walkers) {
@@ -591,13 +659,16 @@ export class MarketEngine {
         draw: () => {
           ctx.globalAlpha = dim ? 0.3 : 1;
           ctx.fillStyle = "rgba(0,0,0,0.35)";
-          ctx.fillRect(sx - 4, sy - 1, 8, 2);
-          ctx.drawImage(spr, sx - 6, sy - 15 - (moving ? frame : 0));
+          ctx.fillRect(sx - 5, sy - 1, 10, 2);
+          ctx.fillRect(sx - 3, sy - 2, 6, 1);
+          ctx.drawImage(spr, sx - SPRITE_HALF, sy - SPRITE_H + 1 - (moving ? frame : 0));
           if (w.bubble) {
+            ctx.fillStyle = "#1b1815";
+            ctx.fillRect(sx - 4, sy - 30, 9, 10);
             ctx.fillStyle = "#f4f4f2";
-            ctx.fillRect(sx - 3, sy - 26, 7, 8);
-            ctx.fillRect(sx - 1, sy - 18, 2, 2);
-            drawText(ctx, "$", sx - 1, sy - 25, "#1b1815");
+            ctx.fillRect(sx - 3, sy - 29, 7, 8);
+            ctx.fillRect(sx - 1, sy - 21, 2, 2);
+            drawText(ctx, "$", sx - 1, sy - 28, "#1b1815");
           }
           ctx.globalAlpha = 1;
         },
@@ -614,12 +685,21 @@ export class MarketEngine {
       const px = Math.round(p.x + ox);
       const py = Math.round(p.y + oy);
       if (p.kind === "coin") {
-        ctx.drawImage(this.coin, px - 3, py - 3);
+        const spin = [7, 5, 2, 5][Math.floor(p.life / 90) % 4];
+        ctx.drawImage(this.coin, px - Math.floor(spin / 2), py - 3, spin, 7);
         if (p.text) {
           const tw = textWidth(p.text);
           ctx.fillStyle = "#1b1815";
           ctx.fillRect(px - tw / 2 - 1, py + 5, tw + 2, 7);
           drawText(ctx, p.text, px - tw / 2, py + 6, "#ffd23f");
+        }
+      } else if (p.kind === "firefly") {
+        const on = Math.sin(p.life / 180 + p.x) > -0.2;
+        if (on) {
+          ctx.fillStyle = p.color ?? "#fff";
+          ctx.fillRect(px, py, 1, 1);
+          ctx.globalAlpha *= 0.3;
+          ctx.fillRect(px - 1, py - 1, 3, 3);
         }
       } else {
         ctx.fillStyle = p.color ?? "#fff";
@@ -637,15 +717,24 @@ export class MarketEngine {
       ctx.fillStyle = `rgba(255,107,53,${0.12 * day.dusk})`;
       ctx.fillRect(0, 0, vw, vh);
     }
+    // pixel vignette
+    ctx.fillStyle = "rgba(0,0,0,0.18)";
+    ctx.fillRect(0, 0, vw, 2);
+    ctx.fillRect(0, vh - 2, vw, 2);
+    ctx.fillRect(0, 0, 2, vh);
+    ctx.fillRect(vw - 2, 0, 2, vh);
     if (day.dark > 0.25) {
       ctx.globalCompositeOperation = "lighter";
       const flick = 0.85 + 0.15 * Math.sin(t / 120);
       for (const l of lights) {
-        ctx.fillStyle = `rgba(245,166,35,${0.07 * day.dark * flick})`;
-        ctx.fillRect(Math.round(l.x) - 7, Math.round(l.y) - 5, 14, 12);
-        ctx.fillRect(Math.round(l.x) - 4, Math.round(l.y) - 3, 8, 8);
+        const lx = Math.round(l.x);
+        const ly = Math.round(l.y);
+        ctx.fillStyle = `rgba(245,166,35,${0.05 * day.dark * flick})`;
+        diamond(ctx, lx, ly + 4, 16, ctx.fillStyle);
+        diamond(ctx, lx, ly + 3, 10, ctx.fillStyle);
+        ctx.fillRect(lx - 5, ly - 4, 10, 8);
         ctx.fillStyle = `rgba(255,210,63,${0.9 * day.dark})`;
-        ctx.fillRect(Math.round(l.x) - 1, Math.round(l.y), 2, 3);
+        ctx.fillRect(lx - 1, ly - 1, 2, 2);
       }
       ctx.globalCompositeOperation = "source-over";
     }
@@ -667,7 +756,7 @@ export class MarketEngine {
     for (const w of this.walkers) {
       if (!w.jobId) continue;
       const s = this.toScreen(w.pos.x, w.pos.y);
-      if (Math.abs(p.x - s.x) <= 8 && p.y >= s.y - 18 && p.y <= s.y + 3) best = w;
+      if (Math.abs(p.x - s.x) <= 8 && p.y >= s.y - SPRITE_H - 2 && p.y <= s.y + 3) best = w;
     }
     return best;
   }
